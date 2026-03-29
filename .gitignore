@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+comms/
+output/
+.pytest_cache/
+.venv/
+screenshots/
+node_modules/
+.coverage
+*.db
+*.db-shm
+*.db-wal
