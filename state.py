@@ -14,6 +14,9 @@ class HarnessState:
             "phase": "planning",
             "build_attempts": 0,
             "eval_attempts": 0,
+            "current_sprint": 0,
+            "total_sprints": 0,
+            "timings": {"plan": 0, "sprints": []},
         }
         self._save(data)
 
@@ -38,4 +41,37 @@ class HarnessState:
     def increment_eval(self):
         data = self.load()
         data["eval_attempts"] += 1
+        self._save(data)
+
+    def set_sprint_info(self, current: int, total: int):
+        data = self.load()
+        data["current_sprint"] = current
+        data["total_sprints"] = total
+        self._save(data)
+
+    def record_plan_time(self, seconds: int):
+        data = self.load()
+        data["timings"]["plan"] = seconds
+        self._save(data)
+
+    def add_sprint_timing(self, sprint_num: int, phase: str, seconds: int):
+        data = self.load()
+        sprints = data["timings"]["sprints"]
+
+        entry = None
+        for s in sprints:
+            if s["sprint"] == sprint_num:
+                entry = s
+                break
+        if entry is None:
+            entry = {"sprint": sprint_num}
+            sprints.append(entry)
+
+        if phase == "negotiate":
+            entry["negotiate"] = seconds
+        else:
+            if phase not in entry:
+                entry[phase] = []
+            entry[phase].append(seconds)
+
         self._save(data)
