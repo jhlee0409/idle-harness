@@ -1,4 +1,4 @@
-from config import CONFIG, VERDICT_PASS, TOOLS_READONLY, TOOLS_FULL
+from config import CONFIG, VERDICT_PASS, TOOLS_READONLY, TOOLS_FULL, CONTRACT_AGREED
 
 
 def test_config_has_required_keys():
@@ -11,6 +11,7 @@ def test_config_has_required_keys():
         "output_dir",
         "comms_dir",
         "mcp_tool",
+        "max_negotiation_rounds",
     ]
     for key in required:
         assert key in CONFIG, f"Missing config key: {key}"
@@ -23,9 +24,11 @@ def test_config_defaults():
     assert CONFIG["output_dir"] == "output"
     assert CONFIG["comms_dir"] == "comms"
     assert CONFIG["mcp_tool"] == "chrome-devtools"
+    assert CONFIG["max_negotiation_rounds"] == 3
 
 
 def test_constants():
     assert VERDICT_PASS == "Verdict: PASS"
     assert "Read" in TOOLS_READONLY
     assert "Bash" in TOOLS_FULL
+    assert CONTRACT_AGREED == "AGREED"

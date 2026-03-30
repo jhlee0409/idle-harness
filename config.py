@@ -9,9 +9,11 @@ CONFIG = {
     "output_dir": "output",
     "comms_dir": "comms",
     "mcp_tool": "chrome-devtools",
+    "max_negotiation_rounds": 3,
 }
 
 VERDICT_PASS = "Verdict: PASS"
+CONTRACT_AGREED = "AGREED"
 
 TOOLS_READONLY = ["Read", "Write"]
 TOOLS_FULL = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
