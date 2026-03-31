@@ -26,45 +26,41 @@ def test_set_phase():
         assert loaded["phase"] == "building"
 
 
-def test_increment_build_per_sprint():
+def test_increment_per_sprint():
     with tempfile.TemporaryDirectory() as tmpdir:
         state = HarnessState(tmpdir)
         state.init()
-        state.increment_build(1)
-        state.increment_build(1)
-        state.increment_build(2)
+        state.increment(1, "build")
+        state.increment(1, "build")
+        state.increment(2, "build")
+        state.increment(1, "eval")
         assert state.get_sprint_attempt(1, "build") == 2
         assert state.get_sprint_attempt(2, "build") == 1
-
-
-def test_increment_eval_per_sprint():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        state = HarnessState(tmpdir)
-        state.init()
-        state.increment_eval(1)
-        state.increment_eval(2)
-        state.increment_eval(2)
         assert state.get_sprint_attempt(1, "eval") == 1
-        assert state.get_sprint_attempt(2, "eval") == 2
 
 
-def test_total_builds_across_sprints():
+def test_total_across_sprints():
     with tempfile.TemporaryDirectory() as tmpdir:
         state = HarnessState(tmpdir)
         state.init()
-        state.increment_build(1)
-        state.increment_build(1)
-        state.increment_build(2)
-        assert state.total_builds() == 3
+        state.increment(1, "build")
+        state.increment(1, "build")
+        state.increment(2, "build")
+        state.increment(1, "eval")
+        state.increment(2, "eval")
+        assert state.total("build") == 3
+        assert state.total("eval") == 2
 
 
-def test_total_evals_across_sprints():
+def test_total_with_preloaded_data():
     with tempfile.TemporaryDirectory() as tmpdir:
         state = HarnessState(tmpdir)
         state.init()
-        state.increment_eval(1)
-        state.increment_eval(2)
-        assert state.total_evals() == 2
+        state.increment(1, "build")
+        state.increment(1, "build")
+        data = state.load()
+        # Reuse loaded data instead of re-reading
+        assert state.total("build", data) == 2
 
 
 def test_cost_tracking():

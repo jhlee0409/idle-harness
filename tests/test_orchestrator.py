@@ -71,7 +71,6 @@ def test_orchestrator_init_creates_dirs():
     with tempfile.TemporaryDirectory() as tmpdir:
         orch = _setup_orch(tmpdir)
         assert os.path.isdir(os.path.join(tmpdir, "comms"))
-        assert os.path.isdir(os.path.join(tmpdir, "comms", "screenshots"))
         assert os.path.isdir(os.path.join(tmpdir, "output"))
 
 
@@ -166,6 +165,7 @@ async def test_orchestrator_negotiate_contract():
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
             f.write(SAMPLE_SPEC)
+        orch._spec = None  # force re-read
         orch._init_output()
 
         from sprint import Sprint
@@ -202,6 +202,7 @@ async def test_orchestrator_build_with_sprint():
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
             f.write(SAMPLE_SPEC)
+        orch._spec = None  # force re-read
         orch._init_output()
 
         from sprint import Sprint
@@ -227,6 +228,7 @@ async def test_orchestrator_evaluate_pass():
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
             f.write(SAMPLE_SPEC)
+        orch._spec = None  # force re-read
         orch._init_output()
 
         from sprint import Sprint
@@ -251,6 +253,7 @@ async def test_orchestrator_evaluate_fail():
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
             f.write(SAMPLE_SPEC)
+        orch._spec = None  # force re-read
         orch._init_output()
 
         from sprint import Sprint
@@ -278,6 +281,7 @@ async def test_slug_ascii_only():
         spec_with_korean = "# Mystic Arcana — AI 타로 리딩 웹 앱\n\n## Vision\nTest.\n"
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
             f.write(spec_with_korean)
+        orch._spec = None  # force re-read
         orch._init_output()
         assert "타로" not in orch.output_dir
         assert "mystic-arcana" in orch.output_dir

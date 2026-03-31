@@ -7,6 +7,8 @@ import urllib.request
 
 from config import get_server_ports
 
+_FULLSTACK = "__fullstack__"
+
 
 class DevServer:
     def __init__(
@@ -25,46 +27,38 @@ class DevServer:
         self.start_cmd: str | None = None
         self.processes: list[subprocess.Popen] = []
 
-    def detect_from_comms(self) -> dict | None:
-        # Check both harness comms and output dir for dev_server.json
+    def detect(self):
+        """Detect dev server command from comms JSON, output JSON, or project structure."""
         for base in (self.comms_dir, self.output_dir):
-            path = os.path.join(base, "dev_server.json")
             try:
-                with open(path) as f:
-                    data = json.load(f)
-                self.start_cmd = data.get("start")
-                return data
+                with open(os.path.join(base, "dev_server.json")) as f:
+                    self.start_cmd = json.load(f).get("start")
+                    return
             except FileNotFoundError:
                 continue
-        return None
 
-    def detect_from_structure(self) -> dict | None:
         pkg_root = os.path.join(self.output_dir, "package.json")
         if os.path.exists(pkg_root):
             self.start_cmd = "npm run dev"
-            return {"start": "npm run dev"}
+            return
 
         pkg_frontend = os.path.join(self.output_dir, "frontend", "package.json")
         main_backend = os.path.join(self.output_dir, "backend", "main.py")
 
         if os.path.exists(pkg_frontend) and os.path.exists(main_backend):
-            self.start_cmd = "__fullstack__"
-            return {"start": "__fullstack__"}
-
-        if os.path.exists(pkg_frontend):
+            self.start_cmd = _FULLSTACK
+        elif os.path.exists(pkg_frontend):
             self.start_cmd = "cd frontend && npm run dev"
-            return {"start": "cd frontend && npm run dev"}
 
-        return None
-
-    def detect(self) -> str | None:
-        result = self.detect_from_comms()
-        if result:
-            return result["start"]
-        result = self.detect_from_structure()
-        if result:
-            return result["start"]
-        return None
+    def _spawn(self, cmd: str, cwd: str):
+        self.processes.append(subprocess.Popen(
+            cmd,
+            shell=True,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            preexec_fn=os.setsid,
+        ))
 
     def start(self):
         if not self.start_cmd:
@@ -72,23 +66,13 @@ class DevServer:
         if not self.start_cmd:
             raise RuntimeError("No dev server command found. Cannot start server.")
 
-        # Kill any leftover processes on our ports
-        for port in get_server_ports():
-            _kill_port(port)
+        _kill_all_ports()
 
-        if self.start_cmd == "__fullstack__":
+        if self.start_cmd == _FULLSTACK:
             self._start_fullstack()
         else:
-            self.processes.append(subprocess.Popen(
-                self.start_cmd,
-                shell=True,
-                cwd=self.output_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                preexec_fn=os.setsid,
-            ))
+            self._spawn(self.start_cmd, self.output_dir)
 
-        # Brief initial wait then health-check
         time.sleep(self.startup_wait)
         self._wait_until_ready()
 
@@ -104,7 +88,6 @@ class DevServer:
                 last_err = exc
                 time.sleep(1)
 
-        # Check if any process has died
         for proc in self.processes:
             if proc.poll() is not None:
                 stderr = proc.stderr.read().decode() if proc.stderr else ""
@@ -136,23 +119,8 @@ class DevServer:
                 capture_output=True,
             )
 
-        self.processes.append(subprocess.Popen(
-            "python3 -m uvicorn main:app --reload --port 8000",
-            shell=True,
-            cwd=backend_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            preexec_fn=os.setsid,
-        ))
-
-        self.processes.append(subprocess.Popen(
-            "npm run dev",
-            shell=True,
-            cwd=frontend_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            preexec_fn=os.setsid,
-        ))
+        self._spawn("python3 -m uvicorn main:app --reload --port 8000", backend_dir)
+        self._spawn("npm run dev", frontend_dir)
 
     def stop(self):
         for proc in self.processes:
@@ -168,8 +136,12 @@ class DevServer:
                 except (ProcessLookupError, PermissionError):
                     pass
         self.processes = []
-        for port in get_server_ports():
-            _kill_port(port)
+        _kill_all_ports()
+
+
+def _kill_all_ports():
+    for port in get_server_ports():
+        _kill_port(port)
 
 
 def _kill_port(port: int):

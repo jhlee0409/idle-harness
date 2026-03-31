@@ -7,35 +7,30 @@ from server import DevServer
 
 def test_detect_server_cmd_from_comms_json():
     with tempfile.TemporaryDirectory() as tmpdir:
-        dev_server_json = os.path.join(tmpdir, "dev_server.json")
-        with open(dev_server_json, "w") as f:
+        with open(os.path.join(tmpdir, "dev_server.json"), "w") as f:
             json.dump({"start": "npm run dev", "stop": "kill"}, f)
         server = DevServer(comms_dir=tmpdir, output_dir="/tmp/out")
-        cmd = server.detect_from_comms()
-        assert cmd["start"] == "npm run dev"
+        server.detect()
+        assert server.start_cmd == "npm run dev"
 
 
 def test_detect_server_cmd_from_output_json():
-    """dev_server.json in output_dir should also be found."""
     with tempfile.TemporaryDirectory() as comms_dir, \
          tempfile.TemporaryDirectory() as output_dir:
-        dev_server_json = os.path.join(output_dir, "dev_server.json")
-        with open(dev_server_json, "w") as f:
+        with open(os.path.join(output_dir, "dev_server.json"), "w") as f:
             json.dump({"start": "npm run dev"}, f)
         server = DevServer(comms_dir=comms_dir, output_dir=output_dir)
-        cmd = server.detect_from_comms()
-        assert cmd["start"] == "npm run dev"
+        server.detect()
+        assert server.start_cmd == "npm run dev"
 
 
 def test_detect_root_package_json():
     with tempfile.TemporaryDirectory() as tmpdir:
-        pkg = {"scripts": {"dev": "vite"}}
         with open(os.path.join(tmpdir, "package.json"), "w") as f:
-            json.dump(pkg, f)
-
+            json.dump({"scripts": {"dev": "vite"}}, f)
         server = DevServer(comms_dir=tmpdir, output_dir=tmpdir)
-        cmd = server.detect_from_structure()
-        assert cmd["start"] == "npm run dev"
+        server.detect()
+        assert server.start_cmd == "npm run dev"
 
 
 def test_detect_fullstack_structure():
@@ -46,10 +41,9 @@ def test_detect_fullstack_structure():
             json.dump({"scripts": {"dev": "vite"}}, f)
         with open(os.path.join(tmpdir, "backend", "main.py"), "w") as f:
             f.write("app = None")
-
         server = DevServer(comms_dir=tmpdir, output_dir=tmpdir)
-        cmd = server.detect_from_structure()
-        assert cmd["start"] == "__fullstack__"
+        server.detect()
+        assert server.start_cmd == "__fullstack__"
 
 
 def test_start_stop_lifecycle():
@@ -62,6 +56,7 @@ def test_start_stop_lifecycle():
 
         with patch("subprocess.Popen") as mock_popen, \
              patch("server._kill_port"), \
+             patch("server._kill_all_ports"), \
              patch.object(server, "_wait_until_ready"):
             mock_proc = MagicMock()
             mock_proc.pid = 12345
@@ -78,7 +73,7 @@ def test_health_check_raises_on_timeout():
         server = DevServer(
             comms_dir=tmpdir, output_dir=tmpdir,
             startup_wait=0, health_timeout=1,
-            health_url="http://localhost:59999",  # nothing listening
+            health_url="http://localhost:59999",
         )
         import pytest
         with pytest.raises(RuntimeError, match="not ready"):

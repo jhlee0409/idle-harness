@@ -25,6 +25,18 @@ def _check_contract_agreed(text: str) -> bool:
     return bool(re.search(r"^AGREED\b", text, re.MULTILINE))
 
 
+def _read_file(path: str) -> str:
+    with open(path) as f:
+        return f.read()
+
+
+def _read_file_optional(path: str) -> str:
+    try:
+        return _read_file(path)
+    except FileNotFoundError:
+        return ""
+
+
 class Orchestrator:
     def __init__(self, root_dir: str | None = None):
         self.root = root_dir or get_harness_root()
@@ -34,8 +46,10 @@ class Orchestrator:
         self.agents_dir = os.path.join(self.root, "agents")
 
         self.spec_path = os.path.join(self.comms_dir, "spec.md")
+        self._spec: str | None = None
         self.sprints: list[Sprint] = []
         self.sprint_results: dict[int, bool] = {}
+        self._created_dirs: set[str] = set()
 
         self._planner_prompt = None
         self._generator_prompt = None
@@ -44,10 +58,14 @@ class Orchestrator:
         self.state = HarnessState(self.comms_dir)
         self.server = None
 
+    @property
+    def spec(self) -> str:
+        if self._spec is None:
+            self._spec = _read_file(self.spec_path)
+        return self._spec
+
     def _load_prompt(self, name: str) -> str:
-        path = os.path.join(self.agents_dir, f"{name}.md")
-        with open(path) as f:
-            return f.read()
+        return _read_file(os.path.join(self.agents_dir, f"{name}.md"))
 
     @property
     def planner_prompt(self) -> str:
@@ -68,15 +86,10 @@ class Orchestrator:
         return self._evaluator_prompt
 
     def _track_cost(self, agent_result):
-        """Record token usage from an agent call."""
         self.state.add_cost(agent_result.input_tokens, agent_result.output_tokens)
 
     def _init_output(self):
-        """Parse product name from spec and create output/{name}/ directory."""
-        with open(self.spec_path) as f:
-            spec = f.read()
-
-        match = re.search(r"^#\s+(.+)$", spec, re.MULTILINE)
+        match = re.search(r"^#\s+(.+)$", self.spec, re.MULTILINE)
         if match:
             name = match.group(1).strip()
             slug = re.sub(r"[^a-z0-9\s-]", "", name.lower())
@@ -100,17 +113,15 @@ class Orchestrator:
 
     def _sprint_dir(self, sprint: Sprint) -> str:
         d = os.path.join(self.comms_dir, "sprints", f"sprint-{sprint.number}")
-        os.makedirs(d, exist_ok=True)
-        os.makedirs(os.path.join(d, "screenshots"), exist_ok=True)
+        if d not in self._created_dirs:
+            os.makedirs(d, exist_ok=True)
+            os.makedirs(os.path.join(d, "screenshots"), exist_ok=True)
+            self._created_dirs.add(d)
         return d
 
     def setup(self):
         os.makedirs(self.output_base, exist_ok=True)
         self.state.init()
-
-    # ------------------------------------------------------------------
-    # Plan
-    # ------------------------------------------------------------------
 
     async def plan(self, user_prompt: str):
         _log("Planner", "Generating spec...")
@@ -131,11 +142,10 @@ class Orchestrator:
         if not os.path.exists(self.spec_path):
             raise RuntimeError("Planner did not write spec.md")
 
+        # Cache spec and initialize output
+        self._spec = _read_file(self.spec_path)
         self._init_output()
-
-        with open(self.spec_path) as f:
-            spec = f.read()
-        self.sprints = parse_sprints(spec)
+        self.sprints = parse_sprints(self.spec)
 
         elapsed = int(time.time() - start)
         self.state.record_plan_time(elapsed)
@@ -143,34 +153,25 @@ class Orchestrator:
         self.state.set_phase("building")
         _log("Planner", f"Spec generated — {len(self.sprints)} sprint(s). ({_elapsed(start)})")
 
-    # ------------------------------------------------------------------
-    # Contract negotiation
-    # ------------------------------------------------------------------
-
     async def negotiate_contract(self, sprint: Sprint) -> str:
         sprint_dir = self._sprint_dir(sprint)
         proposal_path = os.path.join(sprint_dir, "contract_proposal.md")
         review_path = os.path.join(sprint_dir, "contract_review.md")
         contract_path = os.path.join(sprint_dir, "sprint_contract.md")
 
-        with open(self.spec_path) as f:
-            spec = f.read()
-
         _log("Contract", f"Sprint {sprint.number}: Negotiating...")
         start = time.time()
 
         for round_num in range(CONFIG["max_negotiation_rounds"]):
-            # Generator proposes
-            review_context = ""
-            if os.path.exists(review_path):
-                with open(review_path) as f:
-                    review_context = f"\n\nEvaluator's review of your previous proposal:\n{f.read()}"
+            review_context = _read_file_optional(review_path)
+            if review_context:
+                review_context = f"\n\nEvaluator's review of your previous proposal:\n{review_context}"
 
             gen_prompt = (
                 f"Propose a sprint contract for Sprint {sprint.number}: {sprint.name}.\n\n"
                 f"Sprint scope — Features: {', '.join(sprint.features)}. "
                 f"Goal: {sprint.goal}\n\n"
-                f"Full product spec:\n{spec}\n"
+                f"Full product spec:\n{self.spec}\n"
                 f"{review_context}\n\n"
                 f"Write your contract proposal to {proposal_path} using the Write tool. "
                 f"Use the Contract Proposal Mode described in your instructions."
@@ -183,14 +184,11 @@ class Orchestrator:
             )
             self._track_cost(gen_result)
 
-            # Evaluator reviews
-            with open(proposal_path) as f:
-                proposal = f.read()
-
+            proposal = _read_file(proposal_path)
             eval_prompt = (
                 f"Review this sprint contract proposal for Sprint {sprint.number}: {sprint.name}.\n\n"
                 f"Proposal:\n{proposal}\n\n"
-                f"Full product spec:\n{spec}\n\n"
+                f"Full product spec:\n{self.spec}\n\n"
                 f"Write your review to {review_path} using the Write tool. "
                 f"Use the Contract Review Mode described in your instructions. "
                 f"If the criteria are complete and testable, write 'AGREED' at the top."
@@ -205,16 +203,16 @@ class Orchestrator:
 
             # Check both agent response and written file for AGREED
             agreed = _check_contract_agreed(eval_result.result)
-            if not agreed and os.path.exists(review_path):
-                with open(review_path) as f:
-                    agreed = _check_contract_agreed(f.read())
+            if not agreed:
+                review_text = _read_file_optional(review_path)
+                if review_text:
+                    agreed = _check_contract_agreed(review_text)
 
             if agreed:
                 shutil.copy(proposal_path, contract_path)
                 _log("Contract", f"Sprint {sprint.number}: Agreed in round {round_num + 1}. ({_elapsed(start)})")
                 break
         else:
-            # No agreement — use last proposal
             shutil.copy(proposal_path, contract_path)
             _log("Contract", f"Sprint {sprint.number}: No agreement — using last proposal. ({_elapsed(start)})")
 
@@ -222,29 +220,19 @@ class Orchestrator:
         self.state.add_sprint_timing(sprint.number, "negotiate", elapsed)
         return contract_path
 
-    # ------------------------------------------------------------------
-    # Build
-    # ------------------------------------------------------------------
-
     async def build(self, sprint: Sprint, contract_path: str):
-        with open(self.spec_path) as f:
-            spec = f.read()
-        with open(contract_path) as f:
-            contract = f.read()
+        contract = _read_file(contract_path)
 
         sprint_dir = self._sprint_dir(sprint)
         eval_path = os.path.join(sprint_dir, "evaluation.md")
-        eval_context = ""
-        try:
-            with open(eval_path) as f:
-                eval_context = f"\n\nPrevious evaluation feedback:\n{f.read()}"
-        except FileNotFoundError:
-            pass
+        eval_context = _read_file_optional(eval_path)
+        if eval_context:
+            eval_context = f"\n\nPrevious evaluation feedback:\n{eval_context}"
 
-        self.state.increment_build(sprint.number)
+        self.state.increment(sprint.number, "build")
         attempt = self.state.get_sprint_attempt(sprint.number, "build")
 
-        # Absolute path for dev_server.json so Generator writes to the right place
+        # Generator runs in output_dir, but dev_server.json must land in comms_dir
         dev_server_json_path = os.path.join(self.comms_dir, "dev_server.json")
 
         _log("Generator", f"Sprint {sprint.number} — Building (attempt {attempt})...")
@@ -252,7 +240,7 @@ class Orchestrator:
         prompt = (
             f"Build Sprint {sprint.number}: {sprint.name}.\n\n"
             f"Sprint contract:\n{contract}\n\n"
-            f"Full product spec:\n{spec}\n"
+            f"Full product spec:\n{self.spec}\n"
             f"{eval_context}\n\n"
             f"Implement ALL criteria in the sprint contract. "
             f"Work in the current directory. Self-verify: build must succeed, app must run. "
@@ -272,21 +260,14 @@ class Orchestrator:
         self.state.add_sprint_timing(sprint.number, "build", elapsed)
         _log("Generator", f"Sprint {sprint.number} — Build complete. ({_elapsed(start)})")
 
-    # ------------------------------------------------------------------
-    # Evaluate
-    # ------------------------------------------------------------------
-
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
-        with open(self.spec_path) as f:
-            spec = f.read()
-        with open(contract_path) as f:
-            contract = f.read()
+        contract = _read_file(contract_path)
 
         sprint_dir = self._sprint_dir(sprint)
         eval_path = os.path.join(sprint_dir, "evaluation.md")
         screenshots_dir = os.path.join(sprint_dir, "screenshots")
 
-        self.state.increment_eval(sprint.number)
+        self.state.increment(sprint.number, "eval")
         attempt = self.state.get_sprint_attempt(sprint.number, "eval")
 
         _log("Evaluator", f"Sprint {sprint.number} — Starting servers...")
@@ -297,7 +278,7 @@ class Orchestrator:
             prompt = (
                 f"Evaluate Sprint {sprint.number}: {sprint.name}.\n\n"
                 f"Sprint contract (test against these criteria):\n{contract}\n\n"
-                f"Product spec:\n{spec}\n\n"
+                f"Product spec:\n{self.spec}\n\n"
                 f"Navigate to {CONFIG['dev_server_url']}. Test every criterion in the sprint contract. "
                 f"Take screenshots as evidence — save them to {screenshots_dir}/. "
                 f"Write your evaluation as a response."
@@ -331,9 +312,26 @@ class Orchestrator:
                     print(f"    {line.strip()}")
         return passed
 
-    # ------------------------------------------------------------------
-    # Run — full pipeline
-    # ------------------------------------------------------------------
+    async def _retry_build_eval(self, sprint: Sprint, contract_path: str, label: str):
+        """Shared retry loop for both full and simple modes."""
+        sprint_passed = False
+        for attempt in range(CONFIG["max_build_attempts"]):
+            try:
+                await self.build(sprint, contract_path)
+                passed = await self.evaluate(sprint, contract_path)
+            except AgentError as exc:
+                _log("Harness", f"{label} attempt {attempt + 1} error: {exc}")
+                passed = False
+
+            if passed:
+                sprint_passed = True
+                break
+
+            if attempt == CONFIG["max_build_attempts"] - 1:
+                _log("Harness", f"{label} failed after {CONFIG['max_build_attempts']} attempts.")
+
+        self.sprint_results[sprint.number] = sprint_passed
+        return sprint_passed
 
     async def run(self, user_prompt: str):
         print("=" * 60)
@@ -353,69 +351,27 @@ class Orchestrator:
         self._print_report(total_start)
 
     async def _run_full(self):
-        """Full pipeline: sprint decomposition + contract negotiation + build-eval loop."""
         for sprint in self.sprints:
             self.state.set_sprint_info(current=sprint.number, total=len(self.sprints))
             _log("Harness", f"=== Sprint {sprint.number}/{len(self.sprints)}: {sprint.name} ===")
 
             contract_path = await self.negotiate_contract(sprint)
+            passed = await self._retry_build_eval(sprint, contract_path, f"Sprint {sprint.number}")
 
-            sprint_passed = False
-            for attempt in range(CONFIG["max_build_attempts"]):
-                try:
-                    await self.build(sprint, contract_path)
-                    passed = await self.evaluate(sprint, contract_path)
-                except AgentError as exc:
-                    _log("Harness", f"Sprint {sprint.number} attempt {attempt + 1} error: {exc}")
-                    passed = False
-
-                if passed:
-                    sprint_passed = True
-                    break
-
-                if attempt == CONFIG["max_build_attempts"] - 1:
-                    _log("Harness", f"Sprint {sprint.number} failed after {CONFIG['max_build_attempts']} attempts.")
-
-            self.sprint_results[sprint.number] = sprint_passed
-
-            if not sprint_passed:
+            if not passed:
                 _log("Harness", f"Sprint {sprint.number} incomplete — continuing to next sprint.")
 
     async def _run_simple(self):
-        """Simple mode: build-eval loop without sprint decomposition or contract negotiation."""
         single_sprint = Sprint(number=1, name="Full Build")
         self.state.set_sprint_info(current=1, total=1)
         _log("Harness", "=== Simple mode: build + evaluation (no contracts) ===")
 
-        # Create a pseudo-contract from the spec for the evaluator
         sprint_dir = self._sprint_dir(single_sprint)
         contract_path = os.path.join(sprint_dir, "sprint_contract.md")
-        with open(self.spec_path) as f:
-            spec = f.read()
         with open(contract_path, "w") as f:
-            f.write(spec)
+            f.write(self.spec)
 
-        sprint_passed = False
-        for attempt in range(CONFIG["max_build_attempts"]):
-            try:
-                await self.build(single_sprint, contract_path)
-                passed = await self.evaluate(single_sprint, contract_path)
-            except AgentError as exc:
-                _log("Harness", f"Simple mode attempt {attempt + 1} error: {exc}")
-                passed = False
-
-            if passed:
-                sprint_passed = True
-                break
-
-            if attempt == CONFIG["max_build_attempts"] - 1:
-                _log("Harness", f"Simple mode: failed after {CONFIG['max_build_attempts']} attempts.")
-
-        self.sprint_results[1] = sprint_passed
-
-    # ------------------------------------------------------------------
-    # Reporting
-    # ------------------------------------------------------------------
+        await self._retry_build_eval(single_sprint, contract_path, "Simple mode")
 
     def _print_report(self, total_start: float):
         status = self.state.load()
@@ -425,22 +381,19 @@ class Orchestrator:
         print(f"  Project:        {self.output_dir}")
         print(f"  Mode:           {CONFIG['mode']}")
         print(f"  Sprints:        {status.get('total_sprints', 1)}")
-        print(f"  Build attempts: {self.state.total_builds()}")
-        print(f"  Eval attempts:  {self.state.total_evals()}")
+        print(f"  Build attempts: {self.state.total('build', status)}")
+        print(f"  Eval attempts:  {self.state.total('eval', status)}")
 
-        # Sprint results
         for num, passed in self.sprint_results.items():
             icon = "PASS" if passed else "FAIL"
             print(f"  Sprint {num}:       {icon}")
 
-        # Cost
         cost = status.get("cost", {})
         input_t = cost.get("input_tokens", 0)
         output_t = cost.get("output_tokens", 0)
         if input_t or output_t:
             print(f"  Tokens:         {input_t:,} in / {output_t:,} out")
 
-        # Timings
         timings = status.get("timings", {})
         if timings.get("plan"):
             print(f"  Planning:       {_elapsed_secs(timings['plan'])}")
