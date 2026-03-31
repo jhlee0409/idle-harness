@@ -1,3 +1,5 @@
+import sys
+import time
 from dataclasses import dataclass
 
 from claude_agent_sdk import (
@@ -19,6 +21,21 @@ class AgentResult:
 
 class AgentError(Exception):
     """Raised when a sub-agent fails or returns no result."""
+
+
+def _fmt_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+def _fmt_elapsed(secs: int) -> str:
+    if secs < 60:
+        return f"{secs}s"
+    m, s = divmod(secs, 60)
+    return f"{m}m{s:02d}s"
 
 
 async def call_agent(
@@ -53,24 +70,33 @@ async def call_agent(
     result_text = ""
     input_tokens = 0
     output_tokens = 0
-
     conversation_id = ""
+    start = time.time()
 
     try:
         async for message in query(prompt=user_prompt, options=options):
             if isinstance(message, AssistantMessage):
                 turn_count += 1
-                if turn_count % 5 == 0:
-                    print(f"    ...진행 중 ({turn_count} turns)")
                 usage = getattr(message, "usage", None)
                 if usage:
                     input_tokens += getattr(usage, "input_tokens", 0)
                     output_tokens += getattr(usage, "output_tokens", 0)
+                # Single-line overwrite progress
+                elapsed = _fmt_elapsed(int(time.time() - start))
+                total_tok = _fmt_tokens(input_tokens + output_tokens)
+                status = f"    ↳ {elapsed} | {turn_count} turns | {total_tok} tokens"
+                sys.stdout.write(f"\r{status}    ")
+                sys.stdout.flush()
             if isinstance(message, ResultMessage):
                 result_text = message.result
                 conversation_id = getattr(message, "conversation_id", "") or ""
     except Exception as exc:
+        sys.stdout.write("\r" + " " * 60 + "\r")  # clear progress line
         raise AgentError(f"Agent execution failed: {exc}") from exc
+
+    # Clear progress line
+    sys.stdout.write("\r" + " " * 60 + "\r")
+    sys.stdout.flush()
 
     if not result_text:
         raise AgentError(

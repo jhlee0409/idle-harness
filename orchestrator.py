@@ -154,7 +154,7 @@ class Orchestrator:
         self.state.record_plan_time(elapsed)
         self.state.set_sprint_info(current=0, total=len(self.sprints))
         self.state.set_phase("building")
-        _log("Planner", f"Spec generated — {len(self.sprints)} sprint(s). ({_elapsed(start)})")
+        _log("Planner", f"Spec generated — {len(self.sprints)} sprint(s). ({_elapsed(start)}, {_fmt_tokens(agent_result)} tokens)")
 
     async def negotiate_contract(self, sprint: Sprint) -> str:
         sprint_dir = self._sprint_dir(sprint)
@@ -265,7 +265,7 @@ class Orchestrator:
         self._track_cost(agent_result, "build")
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "build", elapsed)
-        _log("Generator", f"Sprint {sprint.number} — Build complete. ({_elapsed(start)})")
+        _log("Generator", f"Sprint {sprint.number} — Build complete. ({_elapsed(start)}, {agent_result.turns} turns, {_fmt_tokens(agent_result)} tokens)")
 
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
         contract = _read_file(contract_path)
@@ -310,13 +310,22 @@ class Orchestrator:
         self.state.add_sprint_timing(sprint.number, "eval", elapsed)
 
         passed = _check_verdict_pass(eval_result.result)
+        stats = f"{_elapsed(start)}, {eval_result.turns} turns, {_fmt_tokens(eval_result)} tokens"
         if passed:
-            _log("Evaluator", f"Sprint {sprint.number} — PASS ({_elapsed(start)})")
+            _log("Evaluator", f"Sprint {sprint.number} — PASS ({stats})")
         else:
-            _log("Evaluator", f"Sprint {sprint.number} — FAIL ({_elapsed(start)})")
+            _log("Evaluator", f"Sprint {sprint.number} — FAIL ({stats})")
+            # Print all numbered required changes
+            in_changes = False
             for line in eval_result.result.split("\n"):
-                if line.strip().startswith(("1.", "2.", "3.")):
-                    print(f"    {line.strip()}")
+                stripped = line.strip()
+                if "Required Changes" in stripped:
+                    in_changes = True
+                    continue
+                if in_changes and stripped.startswith(("#",)):
+                    break
+                if in_changes and stripped and stripped[0].isdigit():
+                    print(f"    {stripped}")
         return passed
 
     async def _retry_build_eval(self, sprint: Sprint, contract_path: str, label: str):
@@ -423,6 +432,15 @@ class Orchestrator:
 
         print(f"  Total time:     {_elapsed(total_start)}")
         print("=" * 60)
+
+
+def _fmt_tokens(agent_result) -> str:
+    total = agent_result.input_tokens + agent_result.output_tokens
+    if total >= 1_000_000:
+        return f"{total / 1_000_000:.1f}M"
+    if total >= 1_000:
+        return f"{total / 1_000:.1f}k"
+    return str(total)
 
 
 def _log(agent: str, msg: str):
