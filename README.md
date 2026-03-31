@@ -1,4 +1,4 @@
-# Multi-Agent Coding Harness
+# Idle Harness
 
 GAN(적대적 생성 신경망) 구조에서 영감을 받은 3-에이전트 자율 코딩 시스템. 짧은 프롬프트 하나로 풀스택 애플리케이션을 자동 생성합니다.
 
@@ -42,9 +42,6 @@ User Prompt (1-4 sentences)
 
 ```bash
 # Setup
-cd harness
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
 
 # Run (requires Claude CLI login)
@@ -58,31 +55,33 @@ python3 orchestrator.py "카드 뽑기 애니메이션과 AI 해석이 있는 �
 - Python 3.11+
 - [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) (OAuth 로그인 완료)
 - Node.js 18+ (Generator가 프론트엔드 빌드에 사용)
-- Chrome (Evaluator가 chrome-devtools MCP로 테스트)
+- Playwright MCP (Evaluator가 브라우저 테스트에 사용)
 
 ## Project Structure
 
 ```
-harness/
+idle-harness/
 ├── orchestrator.py      # 메인 오케스트레이션 루프
 ├── cli.py               # Claude Agent SDK 래퍼
-├── config.py            # 설정값 (평가 기준 임계값, 서버 설정)
+├── config.py            # 설정값 (모드, 서버, 제한)
 ├── state.py             # 상태 관리 (status.json)
-├── server.py            # dev server 기동/종료 (프로세스 그룹 관리)
+├── server.py            # dev server 기동/종료
+├── sprint.py            # 스프린트 파싱
 ├── agents/
 │   ├── planner.md       # Planner 시스템 프롬프트
 │   ├── generator.md     # Generator 시스템 프롬프트
 │   └── evaluator.md     # Evaluator 시스템 프롬프트
 ├── tests/               # pytest 테스트
-└── output/              # 생성된 애플리케이션들 (gitignored)
+└── output/              # 생성된 애플리케이션들
 ```
 
 ## How It Works
 
 1. **Plan** — Planner가 프롬프트를 제품 사양서로 확장 (비주얼 디자인 언어 포함)
-2. **Build** — Generator가 전체 풀스택 앱을 한 세션에서 구현
-3. **Evaluate** — Evaluator가 브라우저로 실행 중인 앱을 테스트, 스크린샷 증거 수집
-4. **Iterate** — FAIL 시 피드백과 함께 Generator에게 반환, 최대 3라운드 반복
+2. **Negotiate** — Generator와 Evaluator가 스프린트 계약 협상
+3. **Build** — Generator가 풀스택 앱을 구현 (연속 세션으로 컨텍스트 유지)
+4. **Evaluate** — Evaluator가 Playwright로 실행 중인 앱 테스트, 스크린샷 증거 수집
+5. **Iterate** — FAIL 시 피드백과 함께 Generator에게 반환, 최대 3라운드 반복
 
 ## Configuration
 
@@ -90,9 +89,12 @@ harness/
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `max_build_attempts` | 3 | Build→Evaluate 최대 반복 횟수 |
+| `mode` | `full` | `full` (스프린트+계약+반복) / `simple` (단일 빌드+평가) |
+| `max_build_attempts` | `3` | Build→Evaluate 최대 반복 횟수 |
+| `max_negotiation_rounds` | `3` | 계약 협상 최대 라운드 |
+| `generator_max_turns` | `200` | Generator 최대 턴 수 |
 | `dev_server_url` | `http://localhost:5173` | 프론트엔드 서버 URL |
-| `mcp_tool` | `chrome-devtools` | Evaluator 브라우저 테스트 도구 |
+| `mcp_tool` | `playwright` | Evaluator 브라우저 테스트 도구 |
 
 ## License
 

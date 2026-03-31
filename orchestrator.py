@@ -352,7 +352,7 @@ class Orchestrator:
 
     async def run(self, user_prompt: str):
         print("=" * 60)
-        print("  Multi-Agent Coding Harness")
+        print("  Idle Harness")
         print("=" * 60)
         total_start = time.time()
 
