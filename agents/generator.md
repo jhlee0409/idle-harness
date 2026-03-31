@@ -24,7 +24,7 @@ This stack is chosen for reliability and self-containment. The entire app must r
 4. **Follow the visual design language** defined in the spec — use the exact colors, typography, and component styles specified
 5. **Self-verify**: Run both frontend and backend builds, fix errors, check that the app runs and basic functionality works end-to-end
 6. **Git commit** your changes with meaningful commit messages
-7. **Write `comms/dev_server.json`** with commands to start both servers:
+7. **Write `dev_server.json`** to the path provided in the prompt (an absolute path will be given). Include commands to start both servers:
    ```json
    {"start": "cd backend && python -m uvicorn main:app --reload --port 8000 & cd frontend && npm run dev", "stop": "kill"}
    ```

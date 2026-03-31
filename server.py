@@ -3,25 +3,40 @@ import os
 import signal
 import subprocess
 import time
+import urllib.request
+
+from config import get_server_ports
 
 
 class DevServer:
-    def __init__(self, comms_dir: str, output_dir: str, startup_wait: int = 5):
+    def __init__(
+        self,
+        comms_dir: str,
+        output_dir: str,
+        startup_wait: int = 5,
+        health_timeout: int = 60,
+        health_url: str = "http://localhost:5173",
+    ):
         self.comms_dir = comms_dir
         self.output_dir = output_dir
         self.startup_wait = startup_wait
+        self.health_timeout = health_timeout
+        self.health_url = health_url
         self.start_cmd: str | None = None
         self.processes: list[subprocess.Popen] = []
 
     def detect_from_comms(self) -> dict | None:
-        path = os.path.join(self.comms_dir, "dev_server.json")
-        try:
-            with open(path) as f:
-                data = json.load(f)
-            self.start_cmd = data.get("start")
-            return data
-        except FileNotFoundError:
-            return None
+        # Check both harness comms and output dir for dev_server.json
+        for base in (self.comms_dir, self.output_dir):
+            path = os.path.join(base, "dev_server.json")
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                self.start_cmd = data.get("start")
+                return data
+            except FileNotFoundError:
+                continue
+        return None
 
     def detect_from_structure(self) -> dict | None:
         pkg_root = os.path.join(self.output_dir, "package.json")
@@ -58,8 +73,8 @@ class DevServer:
             raise RuntimeError("No dev server command found. Cannot start server.")
 
         # Kill any leftover processes on our ports
-        _kill_port(5173)
-        _kill_port(8000)
+        for port in get_server_ports():
+            _kill_port(port)
 
         if self.start_cmd == "__fullstack__":
             self._start_fullstack()
@@ -73,7 +88,35 @@ class DevServer:
                 preexec_fn=os.setsid,
             ))
 
+        # Brief initial wait then health-check
         time.sleep(self.startup_wait)
+        self._wait_until_ready()
+
+    def _wait_until_ready(self):
+        """Poll the health URL until the server responds or timeout."""
+        deadline = time.time() + self.health_timeout
+        last_err = None
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(self.health_url, timeout=2)
+                return
+            except Exception as exc:
+                last_err = exc
+                time.sleep(1)
+
+        # Check if any process has died
+        for proc in self.processes:
+            if proc.poll() is not None:
+                stderr = proc.stderr.read().decode() if proc.stderr else ""
+                raise RuntimeError(
+                    f"Dev server process exited with code {proc.returncode}. "
+                    f"stderr: {stderr[:500]}"
+                )
+
+        raise RuntimeError(
+            f"Dev server not ready after {self.health_timeout}s at {self.health_url}. "
+            f"Last error: {last_err}"
+        )
 
     def _start_fullstack(self):
         backend_dir = os.path.join(self.output_dir, "backend")
@@ -125,8 +168,8 @@ class DevServer:
                 except (ProcessLookupError, PermissionError):
                     pass
         self.processes = []
-        _kill_port(5173)
-        _kill_port(8000)
+        for port in get_server_ports():
+            _kill_port(port)
 
 
 def _kill_port(port: int):

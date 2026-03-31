@@ -1,10 +1,10 @@
 import json
 import os
-import shutil
 import tempfile
 import pytest
 from unittest.mock import patch, AsyncMock
-from orchestrator import Orchestrator
+from cli import AgentResult
+from orchestrator import Orchestrator, _check_verdict_pass, _check_contract_agreed
 
 
 SAMPLE_SPEC = """# Test App
@@ -52,6 +52,10 @@ Test app.
 """
 
 
+def _mock_result(text: str) -> AgentResult:
+    return AgentResult(result=text, input_tokens=100, output_tokens=50, turns=3)
+
+
 def _setup_orch(tmpdir):
     orch = Orchestrator(root_dir=tmpdir)
     orch.setup()
@@ -71,6 +75,36 @@ def test_orchestrator_init_creates_dirs():
         assert os.path.isdir(os.path.join(tmpdir, "output"))
 
 
+# --- Verdict / Contract parsing ---
+
+def test_verdict_pass_strict_match():
+    assert _check_verdict_pass("### Verdict: PASS") is True
+    assert _check_verdict_pass("Verdict: PASS") is True
+    assert _check_verdict_pass("## Verdict: PASS") is True
+
+
+def test_verdict_pass_rejects_false_positives():
+    assert _check_verdict_pass("Expected Verdict: PASS but crashed") is False
+    assert _check_verdict_pass("Verdict: PASS with caveats") is False
+    assert _check_verdict_pass("The Verdict: PASS should not match") is False
+
+
+def test_verdict_fail():
+    assert _check_verdict_pass("### Verdict: FAIL") is False
+
+
+def test_contract_agreed_strict_match():
+    assert _check_contract_agreed("AGREED\nLooks good.") is True
+    assert _check_contract_agreed("AGREED") is True
+
+
+def test_contract_agreed_rejects_false_positives():
+    assert _check_contract_agreed("NOT AGREED") is False
+    assert _check_contract_agreed("We have NOT AGREED on this.") is False
+
+
+# --- Plan phase ---
+
 @pytest.mark.anyio
 async def test_orchestrator_plan_phase():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -79,7 +113,7 @@ async def test_orchestrator_plan_phase():
         async def mock_planner(*args, **kwargs):
             with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
                 f.write(SAMPLE_SPEC)
-            return "Spec written."
+            return _mock_result("Spec written.")
 
         with patch("orchestrator.call_agent", side_effect=mock_planner):
             await orch.plan("Build a test app")
@@ -97,7 +131,7 @@ async def test_orchestrator_plan_parses_sprints():
         async def mock_planner(*args, **kwargs):
             with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
                 f.write(SAMPLE_SPEC)
-            return "Spec written."
+            return _mock_result("Spec written.")
 
         with patch("orchestrator.call_agent", side_effect=mock_planner):
             await orch.plan("Build a test app")
@@ -115,7 +149,7 @@ async def test_orchestrator_plan_fallback_single_sprint():
         async def mock_planner(*args, **kwargs):
             with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
                 f.write(SAMPLE_SPEC_NO_SPRINTS)
-            return "Spec written."
+            return _mock_result("Spec written.")
 
         with patch("orchestrator.call_agent", side_effect=mock_planner):
             await orch.plan("Build a test app")
@@ -123,6 +157,8 @@ async def test_orchestrator_plan_fallback_single_sprint():
         assert len(orch.sprints) == 1
         assert orch.sprints[0].name == "Full Build"
 
+
+# --- Contract negotiation ---
 
 @pytest.mark.anyio
 async def test_orchestrator_negotiate_contract():
@@ -145,11 +181,11 @@ async def test_orchestrator_negotiate_contract():
             if call_count == 1:
                 with open(os.path.join(sprint_dir, "contract_proposal.md"), "w") as f:
                     f.write("# Sprint Contract\n## Testable Criteria\n1. Login works")
-                return "Proposal written."
+                return _mock_result("Proposal written.")
             else:
                 with open(os.path.join(sprint_dir, "contract_review.md"), "w") as f:
                     f.write("AGREED\nLooks good.")
-                return "AGREED\nLooks good."
+                return _mock_result("AGREED\nLooks good.")
 
         with patch("orchestrator.call_agent", side_effect=mock_negotiate):
             contract_path = await orch.negotiate_contract(sprint)
@@ -157,6 +193,8 @@ async def test_orchestrator_negotiate_contract():
         assert os.path.exists(contract_path)
         assert "sprint-1" in contract_path
 
+
+# --- Build ---
 
 @pytest.mark.anyio
 async def test_orchestrator_build_with_sprint():
@@ -174,13 +212,14 @@ async def test_orchestrator_build_with_sprint():
         with open(contract_path, "w") as f:
             f.write("# Contract\n1. Login works")
 
-        mock = AsyncMock(return_value="Built successfully")
+        mock = AsyncMock(return_value=_mock_result("Built successfully"))
         with patch("orchestrator.call_agent", mock):
             await orch.build(sprint, contract_path)
 
-        status = json.load(open(os.path.join(tmpdir, "comms", "status.json")))
-        assert status["build_attempts"] == 1
+        assert orch.state.get_sprint_attempt(1, "build") == 1
 
+
+# --- Evaluate ---
 
 @pytest.mark.anyio
 async def test_orchestrator_evaluate_pass():
@@ -198,7 +237,7 @@ async def test_orchestrator_evaluate_pass():
         with open(contract_path, "w") as f:
             f.write("# Contract\n1. Login works")
 
-        mock = AsyncMock(return_value="### Verdict: PASS")
+        mock = AsyncMock(return_value=_mock_result("### Verdict: PASS"))
         with patch("orchestrator.call_agent", mock):
             with patch.object(orch, "server"):
                 passed = await orch.evaluate(sprint, contract_path)
@@ -222,13 +261,15 @@ async def test_orchestrator_evaluate_fail():
         with open(contract_path, "w") as f:
             f.write("# Contract\n1. Login works")
 
-        mock = AsyncMock(return_value="### Verdict: FAIL\n### Required Changes\n1. Fix the button")
+        mock = AsyncMock(return_value=_mock_result("### Verdict: FAIL\n### Required Changes\n1. Fix the button"))
         with patch("orchestrator.call_agent", mock):
             with patch.object(orch, "server"):
                 passed = await orch.evaluate(sprint, contract_path)
 
         assert passed is False
 
+
+# --- Slug ---
 
 @pytest.mark.anyio
 async def test_slug_ascii_only():
@@ -240,3 +281,23 @@ async def test_slug_ascii_only():
         orch._init_output()
         assert "타로" not in orch.output_dir
         assert "mystic-arcana" in orch.output_dir
+
+
+# --- Cost tracking ---
+
+@pytest.mark.anyio
+async def test_plan_tracks_cost():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+
+        async def mock_planner(*args, **kwargs):
+            with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+                f.write(SAMPLE_SPEC)
+            return AgentResult(result="Done", input_tokens=5000, output_tokens=2000, turns=5)
+
+        with patch("orchestrator.call_agent", side_effect=mock_planner):
+            await orch.plan("Build a test app")
+
+        status = orch.state.load()
+        assert status["cost"]["input_tokens"] == 5000
+        assert status["cost"]["output_tokens"] == 2000

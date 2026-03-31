@@ -13,8 +13,8 @@ def test_init_creates_status_file():
         with open(path) as f:
             data = json.load(f)
         assert data["phase"] == "planning"
-        assert data["build_attempts"] == 0
-        assert data["eval_attempts"] == 0
+        assert data["sprint_attempts"] == {}
+        assert data["cost"] == {"input_tokens": 0, "output_tokens": 0}
 
 
 def test_set_phase():
@@ -26,23 +26,56 @@ def test_set_phase():
         assert loaded["phase"] == "building"
 
 
-def test_increment_build():
+def test_increment_build_per_sprint():
     with tempfile.TemporaryDirectory() as tmpdir:
         state = HarnessState(tmpdir)
         state.init()
-        state.increment_build()
-        state.increment_build()
-        loaded = state.load()
-        assert loaded["build_attempts"] == 2
+        state.increment_build(1)
+        state.increment_build(1)
+        state.increment_build(2)
+        assert state.get_sprint_attempt(1, "build") == 2
+        assert state.get_sprint_attempt(2, "build") == 1
 
 
-def test_increment_eval():
+def test_increment_eval_per_sprint():
     with tempfile.TemporaryDirectory() as tmpdir:
         state = HarnessState(tmpdir)
         state.init()
-        state.increment_eval()
-        loaded = state.load()
-        assert loaded["eval_attempts"] == 1
+        state.increment_eval(1)
+        state.increment_eval(2)
+        state.increment_eval(2)
+        assert state.get_sprint_attempt(1, "eval") == 1
+        assert state.get_sprint_attempt(2, "eval") == 2
+
+
+def test_total_builds_across_sprints():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = HarnessState(tmpdir)
+        state.init()
+        state.increment_build(1)
+        state.increment_build(1)
+        state.increment_build(2)
+        assert state.total_builds() == 3
+
+
+def test_total_evals_across_sprints():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = HarnessState(tmpdir)
+        state.init()
+        state.increment_eval(1)
+        state.increment_eval(2)
+        assert state.total_evals() == 2
+
+
+def test_cost_tracking():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = HarnessState(tmpdir)
+        state.init()
+        state.add_cost(1000, 500)
+        state.add_cost(2000, 800)
+        data = state.load()
+        assert data["cost"]["input_tokens"] == 3000
+        assert data["cost"]["output_tokens"] == 1300
 
 
 def test_init_has_sprint_fields():

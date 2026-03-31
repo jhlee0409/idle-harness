@@ -12,10 +12,10 @@ class HarnessState:
         os.makedirs(os.path.join(self.comms_dir, "screenshots"), exist_ok=True)
         data = {
             "phase": "planning",
-            "build_attempts": 0,
-            "eval_attempts": 0,
             "current_sprint": 0,
             "total_sprints": 0,
+            "sprint_attempts": {},
+            "cost": {"input_tokens": 0, "output_tokens": 0},
             "timings": {"plan": 0, "sprints": []},
         }
         self._save(data)
@@ -33,21 +33,67 @@ class HarnessState:
         data["phase"] = phase
         self._save(data)
 
-    def increment_build(self):
+    # --- Per-sprint attempt tracking ---
+
+    def _sprint_key(self, sprint_num: int) -> str:
+        return str(sprint_num)
+
+    def _ensure_sprint_entry(self, data: dict, sprint_num: int) -> dict:
+        key = self._sprint_key(sprint_num)
+        attempts = data.setdefault("sprint_attempts", {})
+        if key not in attempts:
+            attempts[key] = {"build": 0, "eval": 0}
+        return attempts[key]
+
+    def increment_build(self, sprint_num: int):
         data = self.load()
-        data["build_attempts"] += 1
+        entry = self._ensure_sprint_entry(data, sprint_num)
+        entry["build"] += 1
         self._save(data)
 
-    def increment_eval(self):
+    def increment_eval(self, sprint_num: int):
         data = self.load()
-        data["eval_attempts"] += 1
+        entry = self._ensure_sprint_entry(data, sprint_num)
+        entry["eval"] += 1
         self._save(data)
+
+    def get_sprint_attempt(self, sprint_num: int, phase: str) -> int:
+        data = self.load()
+        entry = self._ensure_sprint_entry(data, sprint_num)
+        return entry.get(phase, 0)
+
+    def total_builds(self) -> int:
+        data = self.load()
+        return sum(
+            e["build"]
+            for e in data.get("sprint_attempts", {}).values()
+        )
+
+    def total_evals(self) -> int:
+        data = self.load()
+        return sum(
+            e["eval"]
+            for e in data.get("sprint_attempts", {}).values()
+        )
+
+    # --- Cost tracking ---
+
+    def add_cost(self, input_tokens: int, output_tokens: int):
+        data = self.load()
+        cost = data.setdefault("cost", {"input_tokens": 0, "output_tokens": 0})
+        cost["input_tokens"] += input_tokens
+        cost["output_tokens"] += output_tokens
+        self._save(data)
+
+    # --- Sprint info ---
 
     def set_sprint_info(self, current: int, total: int):
         data = self.load()
         data["current_sprint"] = current
         data["total_sprints"] = total
         self._save(data)
+
+    # --- Timing ---
 
     def record_plan_time(self, seconds: int):
         data = self.load()

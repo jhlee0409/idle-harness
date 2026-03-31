@@ -1,15 +1,31 @@
 import os
+from urllib.parse import urlparse
 
 CONFIG = {
+    # --- Harness mode ---
+    # "full": sprint decomposition + contract negotiation + multi-eval
+    # "simple": single build + single end-of-build evaluation (no sprints/contracts)
+    "mode": "full",
+
+    # --- Build / eval limits ---
     "max_build_attempts": 3,
+    "max_negotiation_rounds": 3,
+    "generator_max_turns": 200,
+
+    # --- Dev server ---
     "dev_server_start_cmd": None,
     "dev_server_stop_cmd": None,
     "dev_server_url": "http://localhost:5173",
+    "backend_url": "http://localhost:8000",
     "dev_server_startup_wait": 5,
+    "dev_server_health_timeout": 60,
+
+    # --- Directories ---
     "output_dir": "output",
     "comms_dir": "comms",
-    "mcp_tool": "chrome-devtools",
-    "max_negotiation_rounds": 3,
+
+    # --- MCP / tools ---
+    "mcp_tool": "playwright",
 }
 
 VERDICT_PASS = "Verdict: PASS"
@@ -23,3 +39,15 @@ _HARNESS_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 def get_harness_root() -> str:
     return _HARNESS_ROOT
+
+
+def get_server_ports() -> list[int]:
+    """Parse ports from configured URLs."""
+    ports = []
+    for key in ("dev_server_url", "backend_url"):
+        url = CONFIG.get(key, "")
+        if url:
+            parsed = urlparse(url)
+            if parsed.port:
+                ports.append(parsed.port)
+    return sorted(set(ports))
