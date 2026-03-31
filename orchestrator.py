@@ -463,10 +463,83 @@ def _elapsed_secs(secs: int) -> str:
     return f"{hours}h {mins}m {secs}s"
 
 
+def _preflight():
+    """Check all required dependencies before running."""
+    errors = []
+
+    # Python package
+    try:
+        import claude_agent_sdk  # noqa: F401
+    except ImportError:
+        errors.append("claude_agent_sdk not installed. Run: pip install claude-agent-sdk")
+
+    # CLI tools
+    for cmd, install_hint in [
+        ("node", "Install Node.js 18+: https://nodejs.org"),
+        ("npm", "Install Node.js 18+: https://nodejs.org"),
+        ("git", "Install git: https://git-scm.com"),
+    ]:
+        result = subprocess.run(
+            ["which", cmd], capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            errors.append(f"'{cmd}' not found. {install_hint}")
+
+    # Claude CLI auth
+    result = subprocess.run(
+        ["claude", "--version"], capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        errors.append("Claude CLI not found. Install: https://docs.anthropic.com/en/docs/claude-code")
+    else:
+        # Check if logged in by running a trivial command
+        result = subprocess.run(
+            ["claude", "-p", "echo ok", "--max-turns", "1"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            errors.append("Claude CLI not authenticated. Run: claude login")
+
+    # Playwright MCP
+    mcp_tool = CONFIG["mcp_tool"]
+    claude_config_paths = [
+        os.path.expanduser("~/.claude.json"),
+        os.path.expanduser("~/.claude/settings.json"),
+    ]
+    mcp_found = False
+    for path in claude_config_paths:
+        try:
+            with open(path) as f:
+                import json
+                config = json.load(f)
+            mcp_servers = config.get("mcpServers", {})
+            if mcp_tool in mcp_servers:
+                mcp_found = True
+                break
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    if not mcp_found:
+        errors.append(
+            f"MCP server '{mcp_tool}' not configured in Claude settings. "
+            f"Add it to ~/.claude.json under mcpServers."
+        )
+
+    if errors:
+        print("=" * 60)
+        print("  PREFLIGHT CHECK FAILED")
+        print("=" * 60)
+        for i, err in enumerate(errors, 1):
+            print(f"  {i}. {err}")
+        print("=" * 60)
+        sys.exit(1)
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python orchestrator.py \"<your product idea>\"")
         sys.exit(1)
+
+    _preflight()
 
     user_prompt = " ".join(sys.argv[1:])
     orch = Orchestrator()
