@@ -28,9 +28,6 @@ CONFIG = {
     "mcp_tool": "playwright",
 }
 
-VERDICT_PASS = "Verdict: PASS"
-CONTRACT_AGREED = "AGREED"
-
 TOOLS_READONLY = ["Read", "Write"]
 TOOLS_FULL = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 

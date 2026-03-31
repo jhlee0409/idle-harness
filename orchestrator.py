@@ -203,7 +203,13 @@ class Orchestrator:
             )
             self._track_cost(eval_result)
 
-            if _check_contract_agreed(eval_result.result):
+            # Check both agent response and written file for AGREED
+            agreed = _check_contract_agreed(eval_result.result)
+            if not agreed and os.path.exists(review_path):
+                with open(review_path) as f:
+                    agreed = _check_contract_agreed(f.read())
+
+            if agreed:
                 shutil.copy(proposal_path, contract_path)
                 _log("Contract", f"Sprint {sprint.number}: Agreed in round {round_num + 1}. ({_elapsed(start)})")
                 break
@@ -376,52 +382,36 @@ class Orchestrator:
                 _log("Harness", f"Sprint {sprint.number} incomplete — continuing to next sprint.")
 
     async def _run_simple(self):
-        """Simple mode: single build pass, single end-of-build evaluation. No sprints/contracts."""
+        """Simple mode: build-eval loop without sprint decomposition or contract negotiation."""
         single_sprint = Sprint(number=1, name="Full Build")
         self.state.set_sprint_info(current=1, total=1)
-        _log("Harness", "=== Simple mode: single build + evaluation ===")
+        _log("Harness", "=== Simple mode: build + evaluation (no contracts) ===")
 
-        # Build without contract — use spec directly
+        # Create a pseudo-contract from the spec for the evaluator
+        sprint_dir = self._sprint_dir(single_sprint)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
         with open(self.spec_path) as f:
             spec = f.read()
-
-        dev_server_json_path = os.path.join(self.comms_dir, "dev_server.json")
-
-        self.state.increment_build(1)
-        _log("Generator", "Building...")
-        start = time.time()
-        prompt = (
-            f"Build the complete application.\n\n"
-            f"Full product spec:\n{spec}\n\n"
-            f"Implement ALL features in the spec. "
-            f"Work in the current directory. Self-verify: build must succeed, app must run. "
-            f"Commit your changes with git.\n\n"
-            f"Write the dev server config to this ABSOLUTE path: {dev_server_json_path}"
-        )
-        agent_result = await call_agent(
-            system_prompt=self.generator_prompt,
-            user_prompt=prompt,
-            allowed_tools=TOOLS_FULL,
-            cwd=self.output_dir,
-            max_turns=CONFIG["generator_max_turns"],
-        )
-        self._track_cost(agent_result)
-        elapsed = int(time.time() - start)
-        self.state.add_sprint_timing(1, "build", elapsed)
-        _log("Generator", f"Build complete. ({_elapsed(start)})")
-
-        # Single evaluation pass
-        sprint_dir = self._sprint_dir(single_sprint)
-        # Create a pseudo-contract from the spec for the evaluator
-        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
         with open(contract_path, "w") as f:
             f.write(spec)
 
-        passed = await self.evaluate(single_sprint, contract_path)
-        self.sprint_results[1] = passed
+        sprint_passed = False
+        for attempt in range(CONFIG["max_build_attempts"]):
+            try:
+                await self.build(single_sprint, contract_path)
+                passed = await self.evaluate(single_sprint, contract_path)
+            except AgentError as exc:
+                _log("Harness", f"Simple mode attempt {attempt + 1} error: {exc}")
+                passed = False
 
-        if not passed:
-            _log("Harness", "Simple mode: evaluation FAILED. Consider running in full mode for retries.")
+            if passed:
+                sprint_passed = True
+                break
+
+            if attempt == CONFIG["max_build_attempts"] - 1:
+                _log("Harness", f"Simple mode: failed after {CONFIG['max_build_attempts']} attempts.")
+
+        self.sprint_results[1] = sprint_passed
 
     # ------------------------------------------------------------------
     # Reporting

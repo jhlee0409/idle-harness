@@ -1,4 +1,4 @@
-from config import CONFIG, VERDICT_PASS, TOOLS_READONLY, TOOLS_FULL, CONTRACT_AGREED, get_server_ports
+from config import CONFIG, TOOLS_READONLY, TOOLS_FULL, get_server_ports
 
 
 def test_config_has_required_keys():
@@ -36,10 +36,8 @@ def test_config_defaults():
 
 
 def test_constants():
-    assert VERDICT_PASS == "Verdict: PASS"
     assert "Read" in TOOLS_READONLY
     assert "Bash" in TOOLS_FULL
-    assert CONTRACT_AGREED == "AGREED"
 
 
 def test_get_server_ports():
