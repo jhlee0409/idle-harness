@@ -14,6 +14,7 @@ class AgentResult:
     input_tokens: int = 0
     output_tokens: int = 0
     turns: int = 0
+    conversation_id: str = ""
 
 
 class AgentError(Exception):
@@ -27,7 +28,9 @@ async def call_agent(
     cwd: str,
     mcp_tools: list[str] | None = None,
     max_turns: int | None = None,
+    resume: str | None = None,
 ) -> AgentResult:
+    """Call a Claude agent. Pass resume=conversation_id to continue a previous session."""
     tools = list(allowed_tools)
     if mcp_tools:
         for mcp in mcp_tools:
@@ -43,11 +46,15 @@ async def call_agent(
 
     if max_turns:
         options.max_turns = max_turns
+    if resume:
+        options.resume = resume
 
     turn_count = 0
     result_text = ""
     input_tokens = 0
     output_tokens = 0
+
+    conversation_id = ""
 
     try:
         async for message in query(prompt=user_prompt, options=options):
@@ -61,6 +68,7 @@ async def call_agent(
                     output_tokens += getattr(usage, "output_tokens", 0)
             if isinstance(message, ResultMessage):
                 result_text = message.result
+                conversation_id = getattr(message, "conversation_id", "") or ""
     except Exception as exc:
         raise AgentError(f"Agent execution failed: {exc}") from exc
 
@@ -75,4 +83,5 @@ async def call_agent(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         turns=turn_count,
+        conversation_id=conversation_id,
     )

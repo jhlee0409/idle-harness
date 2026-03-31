@@ -58,12 +58,31 @@ class HarnessState:
             for e in data.get("sprint_attempts", {}).values()
         )
 
-    def add_cost(self, input_tokens: int, output_tokens: int):
+    def add_cost(self, input_tokens: int, output_tokens: int, label: str = ""):
         data = self.load()
-        cost = data.setdefault("cost", {"input_tokens": 0, "output_tokens": 0})
+        cost = data.setdefault("cost", {"input_tokens": 0, "output_tokens": 0, "by_phase": {}})
         cost["input_tokens"] += input_tokens
         cost["output_tokens"] += output_tokens
+        if label:
+            by_phase = cost.setdefault("by_phase", {})
+            phase_cost = by_phase.setdefault(label, {"input_tokens": 0, "output_tokens": 0})
+            phase_cost["input_tokens"] += input_tokens
+            phase_cost["output_tokens"] += output_tokens
         self._save(data)
+
+    def set_sprint_result(self, sprint_num: int, passed: bool):
+        data = self.load()
+        results = data.setdefault("sprint_results", {})
+        results[str(sprint_num)] = passed
+        self._save(data)
+
+    def get_sprint_results(self, data: dict | None = None) -> dict[int, bool]:
+        if data is None:
+            data = self.load()
+        return {
+            int(k): v
+            for k, v in data.get("sprint_results", {}).items()
+        }
 
     def set_sprint_info(self, current: int, total: int):
         data = self.load()

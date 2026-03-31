@@ -74,6 +74,32 @@ def test_cost_tracking():
         assert data["cost"]["output_tokens"] == 1300
 
 
+def test_cost_tracking_by_phase():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = HarnessState(tmpdir)
+        state.init()
+        state.add_cost(1000, 500, "planner")
+        state.add_cost(5000, 2000, "build")
+        state.add_cost(3000, 1000, "build")
+        state.add_cost(800, 300, "eval")
+        data = state.load()
+        assert data["cost"]["input_tokens"] == 9800
+        assert data["cost"]["by_phase"]["planner"]["input_tokens"] == 1000
+        assert data["cost"]["by_phase"]["build"]["input_tokens"] == 8000
+        assert data["cost"]["by_phase"]["eval"]["output_tokens"] == 300
+
+
+def test_sprint_results_persistence():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = HarnessState(tmpdir)
+        state.init()
+        state.set_sprint_result(1, True)
+        state.set_sprint_result(2, False)
+        state.set_sprint_result(3, True)
+        results = state.get_sprint_results()
+        assert results == {1: True, 2: False, 3: True}
+
+
 def test_init_has_sprint_fields():
     with tempfile.TemporaryDirectory() as tmpdir:
         state = HarnessState(tmpdir)

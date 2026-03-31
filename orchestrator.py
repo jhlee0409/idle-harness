@@ -55,6 +55,9 @@ class Orchestrator:
         self._generator_prompt = None
         self._evaluator_prompt = None
 
+        # Continuous session: Generator keeps context across build attempts
+        self._generator_conversation_id: str | None = None
+
         self.state = HarnessState(self.comms_dir)
         self.server = None
 
@@ -85,8 +88,8 @@ class Orchestrator:
             self._evaluator_prompt = self._load_prompt("evaluator")
         return self._evaluator_prompt
 
-    def _track_cost(self, agent_result):
-        self.state.add_cost(agent_result.input_tokens, agent_result.output_tokens)
+    def _track_cost(self, agent_result, label: str = ""):
+        self.state.add_cost(agent_result.input_tokens, agent_result.output_tokens, label)
 
     def _init_output(self):
         match = re.search(r"^#\s+(.+)$", self.spec, re.MULTILINE)
@@ -137,7 +140,7 @@ class Orchestrator:
             allowed_tools=TOOLS_READONLY,
             cwd=self.root,
         )
-        self._track_cost(agent_result)
+        self._track_cost(agent_result, "planner")
 
         if not os.path.exists(self.spec_path):
             raise RuntimeError("Planner did not write spec.md")
@@ -182,7 +185,7 @@ class Orchestrator:
                 allowed_tools=TOOLS_READONLY,
                 cwd=self.root,
             )
-            self._track_cost(gen_result)
+            self._track_cost(gen_result, "negotiate")
 
             proposal = _read_file(proposal_path)
             eval_prompt = (
@@ -199,7 +202,7 @@ class Orchestrator:
                 allowed_tools=TOOLS_READONLY,
                 cwd=self.root,
             )
-            self._track_cost(eval_result)
+            self._track_cost(eval_result, "negotiate")
 
             # Check both agent response and written file for AGREED
             agreed = _check_contract_agreed(eval_result.result)
@@ -254,8 +257,12 @@ class Orchestrator:
             allowed_tools=TOOLS_FULL,
             cwd=self.output_dir,
             max_turns=CONFIG["generator_max_turns"],
+            resume=self._generator_conversation_id,
         )
-        self._track_cost(agent_result)
+        # Maintain continuous session across build attempts (per article recommendation)
+        if agent_result.conversation_id:
+            self._generator_conversation_id = agent_result.conversation_id
+        self._track_cost(agent_result, "build")
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "build", elapsed)
         _log("Generator", f"Sprint {sprint.number} — Build complete. ({_elapsed(start)})")
@@ -291,7 +298,7 @@ class Orchestrator:
                 mcp_tools=[CONFIG["mcp_tool"]],
                 cwd=self.root,
             )
-            self._track_cost(eval_result)
+            self._track_cost(eval_result, "eval")
 
             with open(eval_path, "w") as f:
                 f.write(eval_result.result)
@@ -331,6 +338,7 @@ class Orchestrator:
                 _log("Harness", f"{label} failed after {CONFIG['max_build_attempts']} attempts.")
 
         self.sprint_results[sprint.number] = sprint_passed
+        self.state.set_sprint_result(sprint.number, sprint_passed)
         return sprint_passed
 
     async def run(self, user_prompt: str):
@@ -384,8 +392,9 @@ class Orchestrator:
         print(f"  Build attempts: {self.state.total('build', status)}")
         print(f"  Eval attempts:  {self.state.total('eval', status)}")
 
-        for num, passed in self.sprint_results.items():
-            icon = "PASS" if passed else "FAIL"
+        sprint_results = self.state.get_sprint_results(status)
+        for num in sorted(sprint_results):
+            icon = "PASS" if sprint_results[num] else "FAIL"
             print(f"  Sprint {num}:       {icon}")
 
         cost = status.get("cost", {})
@@ -393,6 +402,11 @@ class Orchestrator:
         output_t = cost.get("output_tokens", 0)
         if input_t or output_t:
             print(f"  Tokens:         {input_t:,} in / {output_t:,} out")
+            by_phase = cost.get("by_phase", {})
+            for phase, pcost in sorted(by_phase.items()):
+                pi = pcost.get("input_tokens", 0)
+                po = pcost.get("output_tokens", 0)
+                print(f"    {phase:12s}  {pi:,} in / {po:,} out")
 
         timings = status.get("timings", {})
         if timings.get("plan"):
