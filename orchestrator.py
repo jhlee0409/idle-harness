@@ -6,9 +6,11 @@ import subprocess
 import sys
 import time
 
-from cli import call_agent, AgentError
+from cli import call_agent, AgentError, InfraError
 from config import (
-    CONFIG, TOOLS_READONLY, TOOLS_FULL, get_harness_root,
+    CONFIG, CONTRACT_AGREED,
+    TOOLS_READONLY, TOOLS_FULL, TOOLS_EVALUATOR,
+    get_harness_root,
 )
 from sprint import Sprint, parse_sprints
 from state import HarnessState
@@ -21,8 +23,8 @@ def _check_verdict_pass(text: str) -> bool:
 
 
 def _check_contract_agreed(text: str) -> bool:
-    """Match 'AGREED' only at the start of a line (not inside 'NOT AGREED')."""
-    return bool(re.search(r"^AGREED\b", text, re.MULTILINE))
+    """Match CONTRACT_AGREED only at the start of a line (not inside 'NOT AGREED')."""
+    return bool(re.search(rf"^{CONTRACT_AGREED}\b", text, re.MULTILINE))
 
 
 def _read_file(path: str) -> str:
@@ -90,6 +92,9 @@ class Orchestrator:
 
     def _track_cost(self, agent_result, label: str = ""):
         self.state.add_cost(agent_result.input_tokens, agent_result.output_tokens, label)
+        cost_usd = getattr(agent_result, "cost_usd", 0) or 0
+        if cost_usd > 0:
+            self.state.add_cost_usd(cost_usd)
 
     def _init_output(self):
         match = re.search(r"^#\s+(.+)$", self.spec, re.MULTILINE)
@@ -154,7 +159,7 @@ class Orchestrator:
         self.state.record_plan_time(elapsed)
         self.state.set_sprint_info(current=0, total=len(self.sprints))
         self.state.set_phase("building")
-        _log("Planner", f"Spec generated — {len(self.sprints)} sprint(s). ({_elapsed(start)}, {_fmt_tokens(agent_result)} tokens)")
+        _log("Planner", f"Spec generated — {len(self.sprints)} sprint(s). ({_fmt_stats(agent_result, start)})")
 
     async def negotiate_contract(self, sprint: Sprint) -> str:
         sprint_dir = self._sprint_dir(sprint)
@@ -194,12 +199,12 @@ class Orchestrator:
                 f"Full product spec:\n{self.spec}\n\n"
                 f"Write your review to {review_path} using the Write tool. "
                 f"Use the Contract Review Mode described in your instructions. "
-                f"If the criteria are complete and testable, write 'AGREED' at the top."
+                f"If the criteria are complete and testable, write '{CONTRACT_AGREED}' at the top."
             )
             eval_result = await call_agent(
                 system_prompt=self.evaluator_prompt,
                 user_prompt=eval_prompt,
-                allowed_tools=TOOLS_READONLY,
+                allowed_tools=TOOLS_EVALUATOR,
                 cwd=self.root,
             )
             self._track_cost(eval_result, "negotiate")
@@ -251,21 +256,26 @@ class Orchestrator:
             f"Write the dev server config to this ABSOLUTE path: {dev_server_json_path}"
         )
 
-        agent_result = await call_agent(
-            system_prompt=self.generator_prompt,
-            user_prompt=prompt,
-            allowed_tools=TOOLS_FULL,
-            cwd=self.output_dir,
-            max_turns=CONFIG["generator_max_turns"],
-            resume=self._generator_conversation_id,
-        )
+        try:
+            agent_result = await call_agent(
+                system_prompt=self.generator_prompt,
+                user_prompt=prompt,
+                allowed_tools=TOOLS_FULL,
+                cwd=self.output_dir,
+                max_turns=CONFIG["generator_max_turns"],
+                resume=self._generator_conversation_id,
+            )
+        except AgentError:
+            # Reset conversation — crashed session can't be resumed
+            self._generator_conversation_id = None
+            raise
         # Maintain continuous session across build attempts (per article recommendation)
         if agent_result.conversation_id:
             self._generator_conversation_id = agent_result.conversation_id
         self._track_cost(agent_result, "build")
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "build", elapsed)
-        _log("Generator", f"Sprint {sprint.number} — Build complete. ({_elapsed(start)}, {agent_result.turns} turns, {_fmt_tokens(agent_result)} tokens)")
+        _log("Generator", f"Sprint {sprint.number} — Build complete. ({_fmt_stats(agent_result, start)})")
 
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
         contract = _read_file(contract_path)
@@ -294,7 +304,7 @@ class Orchestrator:
             eval_result = await call_agent(
                 system_prompt=self.evaluator_prompt,
                 user_prompt=prompt,
-                allowed_tools=TOOLS_READONLY,
+                allowed_tools=TOOLS_EVALUATOR,
                 mcp_tools=[CONFIG["mcp_tool"]],
                 cwd=self.root,
             )
@@ -310,22 +320,12 @@ class Orchestrator:
         self.state.add_sprint_timing(sprint.number, "eval", elapsed)
 
         passed = _check_verdict_pass(eval_result.result)
-        stats = f"{_elapsed(start)}, {eval_result.turns} turns, {_fmt_tokens(eval_result)} tokens"
+        stats = _fmt_stats(eval_result, start)
         if passed:
-            _log("Evaluator", f"Sprint {sprint.number} — PASS ({stats})")
+            _log("Evaluator", f"Sprint {sprint.number} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
         else:
-            _log("Evaluator", f"Sprint {sprint.number} — FAIL ({stats})")
-            # Print all numbered required changes
-            in_changes = False
-            for line in eval_result.result.split("\n"):
-                stripped = line.strip()
-                if "Required Changes" in stripped:
-                    in_changes = True
-                    continue
-                if in_changes and stripped.startswith(("#",)):
-                    break
-                if in_changes and stripped and stripped[0].isdigit():
-                    print(f"    {stripped}")
+            _log("Evaluator", f"Sprint {sprint.number} — {_C.RED}{_C.BOLD}FAIL{_C.RESET} ({stats})")
+            _print_required_changes(eval_result.result)
         return passed
 
     async def _retry_build_eval(self, sprint: Sprint, contract_path: str, label: str):
@@ -335,6 +335,11 @@ class Orchestrator:
             try:
                 await self.build(sprint, contract_path)
                 passed = await self.evaluate(sprint, contract_path)
+            except InfraError as exc:
+                _log("Harness", f"{label} attempt {attempt + 1} INFRA ERROR: {exc}")
+                _log("Harness", f"Infrastructure error — rebuilding won't help. Stopping retries for {label}.")
+                passed = False
+                break
             except AgentError as exc:
                 _log("Harness", f"{label} attempt {attempt + 1} error: {exc}")
                 passed = False
@@ -344,7 +349,8 @@ class Orchestrator:
                 break
 
             if attempt == CONFIG["max_build_attempts"] - 1:
-                _log("Harness", f"{label} failed after {CONFIG['max_build_attempts']} attempts.")
+                # Delegate to user: continue or abort? (raises UserAbort)
+                _ask_user_continue(label)
 
         self.sprint_results[sprint.number] = sprint_passed
         self.state.set_sprint_result(sprint.number, sprint_passed)
@@ -359,10 +365,13 @@ class Orchestrator:
         self.setup()
         await self.plan(user_prompt)
 
-        if CONFIG["mode"] == "simple":
-            await self._run_simple()
-        else:
-            await self._run_full()
+        try:
+            if CONFIG["mode"] == "simple":
+                await self._run_simple()
+            else:
+                await self._run_full()
+        except UserAbort:
+            _log("Harness", "Aborted by user.")
 
         self.state.set_phase("completed")
         self._print_report(total_start)
@@ -370,13 +379,71 @@ class Orchestrator:
     async def _run_full(self):
         for sprint in self.sprints:
             self.state.set_sprint_info(current=sprint.number, total=len(self.sprints))
-            _log("Harness", f"=== Sprint {sprint.number}/{len(self.sprints)}: {sprint.name} ===")
+            print(f"\n{_C.BOLD}{'─' * 60}")
+            _log("Harness", f"Sprint {sprint.number}/{len(self.sprints)}: {sprint.name}")
+            print(f"{'─' * 60}{_C.RESET}")
 
             contract_path = await self.negotiate_contract(sprint)
             passed = await self._retry_build_eval(sprint, contract_path, f"Sprint {sprint.number}")
 
             if not passed:
                 _log("Harness", f"Sprint {sprint.number} incomplete — continuing to next sprint.")
+
+        # Final integration evaluation across all sprints
+        await self._integration_eval()
+
+    async def _integration_eval(self):
+        """Final integration evaluation across all sprints (spec §9)."""
+        print(f"\n{_C.BOLD}{'─' * 60}")
+        _log("Harness", "Final Integration Evaluation")
+        print(f"{'─' * 60}{_C.RESET}")
+        max_attempts = 2
+        eval_path = os.path.join(self.comms_dir, "integration_evaluation.md")
+
+        for attempt in range(1, max_attempts + 1):
+            _log("Evaluator", f"Integration eval (attempt {attempt}/{max_attempts})...")
+            self.server.start()
+            start = time.time()
+            try:
+                prompt = (
+                    f"Final Integration Evaluation.\n\n"
+                    f"All sprints have been built. Evaluate the COMPLETE application end-to-end.\n\n"
+                    f"Full product spec:\n{self.spec}\n\n"
+                    f"Navigate to {CONFIG['dev_server_url']}. "
+                    f"Test the full user journey across all features — not just individual sprints. "
+                    f"Verify that features from different sprints work together correctly. "
+                    f"Take screenshots as evidence. "
+                    f"Write your evaluation as a response."
+                )
+                eval_result = await call_agent(
+                    system_prompt=self.evaluator_prompt,
+                    user_prompt=prompt,
+                    allowed_tools=TOOLS_EVALUATOR,
+                    mcp_tools=[CONFIG["mcp_tool"]],
+                    cwd=self.root,
+                )
+                self._track_cost(eval_result, "integration_eval")
+
+                with open(eval_path, "w") as f:
+                    f.write(eval_result.result)
+            except AgentError as exc:
+                _log("Harness", f"Integration eval attempt {attempt} error: {exc}")
+                continue
+            finally:
+                self.server.stop()
+
+            passed = _check_verdict_pass(eval_result.result)
+            stats = _fmt_stats(eval_result, start)
+            if passed:
+                _log("Evaluator", f"Integration eval — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
+                self.state.set_sprint_result(0, True)  # 0 = integration
+                return
+            else:
+                _log("Evaluator", f"Integration eval — {_C.RED}{_C.BOLD}FAIL{_C.RESET} ({stats})")
+                _print_required_changes(eval_result.result)
+
+        self.state.set_sprint_result(0, False)
+        _log("Harness", f"Integration eval failed after {max_attempts} attempts.")
 
     async def _run_simple(self):
         single_sprint = Sprint(number=1, name="Full Build")
@@ -403,10 +470,18 @@ class Orchestrator:
 
         sprint_results = self.state.get_sprint_results(status)
         for num in sorted(sprint_results):
-            icon = "PASS" if sprint_results[num] else "FAIL"
-            print(f"  Sprint {num}:       {icon}")
+            passed = sprint_results[num]
+            color = _C.GREEN if passed else _C.RED
+            icon = f"{color}{_C.BOLD}{'PASS' if passed else 'FAIL'}{_C.RESET}"
+            if num == 0:
+                print(f"  Integration:    {icon}")
+            else:
+                print(f"  Sprint {num}:       {icon}")
 
         cost = status.get("cost", {})
+        total_usd = cost.get("total_usd", 0)
+        if total_usd > 0:
+            print(f"  Cost:           ${total_usd:.2f}")
         input_t = cost.get("input_tokens", 0)
         output_t = cost.get("output_tokens", 0)
         if input_t or output_t:
@@ -434,6 +509,22 @@ class Orchestrator:
         print("=" * 60)
 
 
+def _print_required_changes(text: str):
+    """Extract and print Required Changes from evaluation text."""
+    in_changes = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if "Required Changes" in stripped:
+            in_changes = True
+            continue
+        if in_changes and stripped.startswith("#"):
+            break
+        if in_changes and stripped and stripped[0].isdigit():
+            # Truncate long lines for readability
+            display = stripped[:200] + "..." if len(stripped) > 200 else stripped
+            print(f"    {_C.RED}{display}{_C.RESET}")
+
+
 def _fmt_tokens(agent_result) -> str:
     total = agent_result.input_tokens + agent_result.output_tokens
     if total >= 1_000_000:
@@ -443,8 +534,66 @@ def _fmt_tokens(agent_result) -> str:
     return str(total)
 
 
+def _fmt_cost(agent_result) -> str:
+    cost = getattr(agent_result, "cost_usd", 0) or 0
+    return f"${cost:.2f}" if cost > 0 else ""
+
+
+def _fmt_stats(agent_result, start: float) -> str:
+    parts = [_elapsed(start), f"{agent_result.turns} turns"]
+    tok = _fmt_tokens(agent_result)
+    if tok != "0":
+        parts.append(f"{tok} tokens")
+    cost = _fmt_cost(agent_result)
+    if cost:
+        parts.append(cost)
+    return ", ".join(parts)
+
+
+# --- ANSI colors ---
+class _C:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    CYAN = "\033[36m"
+
+_AGENT_COLORS = {
+    "Planner": _C.CYAN,
+    "Contract": _C.MAGENTA,
+    "Generator": _C.BLUE,
+    "Evaluator": _C.YELLOW,
+    "Harness": _C.DIM,
+}
+
+
+class UserAbort(Exception):
+    """Raised when the user chooses to abort the harness."""
+
+
+def _ask_user_continue(label: str):
+    """Ask the user whether to continue after max failures. Raises UserAbort to stop."""
+    print(f"\n{_C.RED}{'=' * 60}")
+    print(f"  {label} failed after {CONFIG['max_build_attempts']} attempts.")
+    print(f"  Continue to next sprint, or abort the harness?")
+    print(f"{'=' * 60}{_C.RESET}")
+    try:
+        answer = input("  [c]ontinue / [a]bort (default: continue): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "c"
+    if answer.startswith("a"):
+        _log("Harness", "User chose to abort.")
+        raise UserAbort()
+    _log("Harness", "User chose to continue.")
+
+
 def _log(agent: str, msg: str):
-    print(f"[{agent}] {msg}")
+    color = _AGENT_COLORS.get(agent, "")
+    print(f"{color}{_C.BOLD}[{agent}]{_C.RESET} {msg}")
 
 
 def _elapsed(start: float) -> str:
@@ -463,15 +612,27 @@ def _elapsed_secs(secs: int) -> str:
     return f"{hours}h {mins}m {secs}s"
 
 
+def _preflight_ok(name: str) -> str:
+    return f"  {_C.GREEN}✓{_C.RESET} {name}"
+
+
+def _preflight_fail(name: str, hint: str) -> str:
+    return f"  {_C.RED}✗{_C.RESET} {name} — {hint}"
+
+
 def _preflight():
     """Check all required dependencies before running."""
+    print(f"{_C.BOLD}Preflight checks{_C.RESET}")
     errors = []
 
     # Python package
     try:
         import claude_agent_sdk  # noqa: F401
+        print(_preflight_ok("claude_agent_sdk"))
     except ImportError:
-        errors.append("claude_agent_sdk not installed. Run: pip install claude-agent-sdk")
+        msg = "Not installed. Run: pip install claude-agent-sdk"
+        print(_preflight_fail("claude_agent_sdk", msg))
+        errors.append(msg)
 
     # CLI tools
     for cmd, install_hint in [
@@ -482,23 +643,32 @@ def _preflight():
         result = subprocess.run(
             ["which", cmd], capture_output=True, text=True,
         )
-        if result.returncode != 0:
+        if result.returncode == 0:
+            print(_preflight_ok(cmd))
+        else:
+            print(_preflight_fail(cmd, install_hint))
             errors.append(f"'{cmd}' not found. {install_hint}")
 
-    # Claude CLI auth
+    # Claude CLI
     result = subprocess.run(
         ["claude", "--version"], capture_output=True, text=True,
     )
     if result.returncode != 0:
-        errors.append("Claude CLI not found. Install: https://docs.anthropic.com/en/docs/claude-code")
+        msg = "Not found. Install: https://docs.anthropic.com/en/docs/claude-code"
+        print(_preflight_fail("claude cli", msg))
+        errors.append(msg)
     else:
-        # Check if logged in by running a trivial command
+        version = result.stdout.strip() or "installed"
         result = subprocess.run(
             ["claude", "-p", "echo ok", "--max-turns", "1"],
             capture_output=True, text=True, timeout=15,
         )
-        if result.returncode != 0:
-            errors.append("Claude CLI not authenticated. Run: claude login")
+        if result.returncode == 0:
+            print(_preflight_ok(f"claude cli ({version})"))
+        else:
+            msg = "Not authenticated. Run: claude login"
+            print(_preflight_fail("claude cli auth", msg))
+            errors.append(msg)
 
     # Playwright MCP
     mcp_tool = CONFIG["mcp_tool"]
@@ -518,20 +688,19 @@ def _preflight():
                 break
         except (FileNotFoundError, json.JSONDecodeError):
             continue
-    if not mcp_found:
-        errors.append(
-            f"MCP server '{mcp_tool}' not configured in Claude settings. "
-            f"Add it to ~/.claude.json under mcpServers."
-        )
+
+    if mcp_found:
+        print(_preflight_ok(f"MCP: {mcp_tool}"))
+    else:
+        msg = f"Not configured. Add '{mcp_tool}' to ~/.claude.json mcpServers."
+        print(_preflight_fail(f"MCP: {mcp_tool}", msg))
+        errors.append(msg)
 
     if errors:
-        print("=" * 60)
-        print("  PREFLIGHT CHECK FAILED")
-        print("=" * 60)
-        for i, err in enumerate(errors, 1):
-            print(f"  {i}. {err}")
-        print("=" * 60)
+        print(f"\n{_C.RED}{_C.BOLD}Preflight failed — {len(errors)} error(s){_C.RESET}")
         sys.exit(1)
+    else:
+        print(f"{_C.GREEN}{_C.BOLD}All checks passed{_C.RESET}\n")
 
 
 def main():

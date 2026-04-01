@@ -1,4 +1,4 @@
-from config import CONFIG, TOOLS_READONLY, TOOLS_FULL, get_server_ports
+from config import CONFIG, CONTRACT_AGREED, TOOLS_READONLY, TOOLS_FULL, TOOLS_EVALUATOR, get_server_ports
 
 
 def test_config_has_required_keys():
@@ -38,6 +38,16 @@ def test_config_defaults():
 def test_constants():
     assert "Read" in TOOLS_READONLY
     assert "Bash" in TOOLS_FULL
+
+
+def test_contract_agreed_constant():
+    assert CONTRACT_AGREED == "AGREED"
+
+
+def test_tools_evaluator_no_read():
+    """Evaluator must NOT have Read tool — GAN principle prevents source code access."""
+    assert "Read" not in TOOLS_EVALUATOR
+    assert "Write" in TOOLS_EVALUATOR
 
 
 def test_get_server_ports():

@@ -28,8 +28,14 @@ CONFIG = {
     "mcp_tool": "playwright",
 }
 
+CONTRACT_AGREED = "AGREED"
+
 TOOLS_READONLY = ["Read", "Write"]
 TOOLS_FULL = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+
+# Evaluator: Write only — no Read prevents source code access (GAN principle).
+# Contracts and specs are passed directly in the prompt, so Read is unnecessary.
+TOOLS_EVALUATOR = ["Write"]
 
 _HARNESS_ROOT = os.path.dirname(os.path.abspath(__file__))
 

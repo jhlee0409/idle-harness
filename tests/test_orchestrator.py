@@ -2,9 +2,10 @@ import json
 import os
 import tempfile
 import pytest
-from unittest.mock import patch, AsyncMock
-from cli import AgentResult
-from orchestrator import Orchestrator, _check_verdict_pass, _check_contract_agreed
+from unittest.mock import patch, AsyncMock, MagicMock
+from cli import AgentResult, InfraError
+from config import CONTRACT_AGREED, TOOLS_EVALUATOR
+from orchestrator import Orchestrator, UserAbort, _check_verdict_pass, _check_contract_agreed
 
 
 SAMPLE_SPEC = """# Test App
@@ -305,3 +306,225 @@ async def test_plan_tracks_cost():
         status = orch.state.load()
         assert status["cost"]["input_tokens"] == 5000
         assert status["cost"]["output_tokens"] == 2000
+
+
+# --- InfraError stops retries ---
+
+@pytest.mark.anyio
+async def test_retry_stops_on_infra_error():
+    """InfraError should stop retries immediately — no further build attempts."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Users can log in")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n1. Login works")
+
+        build_count = 0
+
+        async def mock_build(s, cp):
+            nonlocal build_count
+            build_count += 1
+
+        async def mock_evaluate(s, cp):
+            raise InfraError("JSON message exceeded maximum buffer size of 1048576 bytes")
+
+        with patch.object(orch, "build", side_effect=mock_build):
+            with patch.object(orch, "evaluate", side_effect=mock_evaluate):
+                passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
+
+        assert passed is False
+        # Should have only attempted ONE build, not 3
+        assert build_count == 1
+
+
+# --- UserAbort on max failures ---
+
+@pytest.mark.anyio
+async def test_retry_asks_user_on_max_failures_continue():
+    """After 3 failures, user is asked. Choosing continue still marks sprint as FAIL."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Users can log in")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n1. Login works")
+
+        mock_build = AsyncMock()
+        mock_eval = AsyncMock(return_value=False)  # evaluate returns bool
+
+        with patch.object(orch, "build", mock_build):
+            with patch.object(orch, "evaluate", mock_eval):
+                with patch("orchestrator.input", return_value="c"):  # continue
+                    passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
+
+        assert passed is False
+        assert mock_build.call_count == 3  # all 3 attempts made
+
+
+@pytest.mark.anyio
+async def test_retry_asks_user_on_max_failures_abort():
+    """After 3 failures, user choosing abort raises UserAbort."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Users can log in")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n1. Login works")
+
+        mock_build = AsyncMock()
+        mock_eval = AsyncMock(return_value=False)  # evaluate returns bool
+
+        with patch.object(orch, "build", mock_build):
+            with patch.object(orch, "evaluate", mock_eval):
+                with patch("orchestrator.input", return_value="a"):  # abort
+                    with pytest.raises(UserAbort):
+                        await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
+
+
+# --- Integration evaluation ---
+
+@pytest.mark.anyio
+async def test_integration_eval_pass():
+    """Integration eval after all sprints completes with PASS."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        mock = AsyncMock(return_value=_mock_result("### Verdict: PASS"))
+        with patch("orchestrator.call_agent", mock):
+            with patch.object(orch, "server", MagicMock()):
+                await orch._integration_eval()
+
+        status = orch.state.load()
+        assert status["sprint_results"]["0"] is True
+
+
+@pytest.mark.anyio
+async def test_integration_eval_fail():
+    """Integration eval fails after 2 attempts."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        mock = AsyncMock(return_value=_mock_result("### Verdict: FAIL\n### Required Changes\n1. Fix everything"))
+        with patch("orchestrator.call_agent", mock):
+            with patch.object(orch, "server", MagicMock()):
+                await orch._integration_eval()
+
+        # Should have called agent exactly 2 times (max_attempts=2)
+        assert mock.call_count == 2
+        status = orch.state.load()
+        assert status["sprint_results"]["0"] is False
+
+
+# --- Evaluator uses TOOLS_EVALUATOR not TOOLS_READONLY ---
+
+@pytest.mark.anyio
+async def test_evaluator_uses_restricted_tools():
+    """Evaluator agent must be called with TOOLS_EVALUATOR (no Read)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Users can log in")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n1. Login works")
+
+        captured_calls = []
+
+        async def mock_call(*args, **kwargs):
+            captured_calls.append(kwargs)
+            return _mock_result("### Verdict: PASS")
+
+        with patch("orchestrator.call_agent", side_effect=mock_call):
+            with patch.object(orch, "server", MagicMock()):
+                await orch.evaluate(sprint, contract_path)
+
+        # The evaluator call should use TOOLS_EVALUATOR
+        eval_call = captured_calls[0]
+        assert "Read" not in eval_call["allowed_tools"]
+        assert "Write" in eval_call["allowed_tools"]
+
+
+# --- CONTRACT_AGREED used in negotiation ---
+
+def test_contract_agreed_used_in_check():
+    """_check_contract_agreed must match the CONTRACT_AGREED constant."""
+    assert _check_contract_agreed(f"{CONTRACT_AGREED}\nLooks good.") is True
+    assert _check_contract_agreed(f"NOT {CONTRACT_AGREED}") is False
+
+
+# --- Simple mode ---
+
+@pytest.mark.anyio
+async def test_run_simple_skips_negotiation():
+    """Simple mode skips contract negotiation and uses spec as contract."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        build_called = False
+        eval_called = False
+
+        async def mock_build(sprint, contract_path):
+            nonlocal build_called
+            build_called = True
+            # Verify contract contains the spec (not a negotiated contract)
+            with open(contract_path) as f:
+                content = f.read()
+            assert "# Test App" in content  # spec content used as contract
+
+        async def mock_evaluate(sprint, contract_path):
+            nonlocal eval_called
+            eval_called = True
+            return True
+
+        with patch.object(orch, "build", side_effect=mock_build):
+            with patch.object(orch, "evaluate", side_effect=mock_evaluate):
+                await orch._run_simple()
+
+        assert build_called
+        assert eval_called
+        # Simple mode uses sprint number 1
+        assert orch.sprint_results.get(1) is True

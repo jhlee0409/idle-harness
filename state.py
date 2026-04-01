@@ -58,6 +58,12 @@ class HarnessState:
             for e in data.get("sprint_attempts", {}).values()
         )
 
+    def add_cost_usd(self, amount: float):
+        data = self.load()
+        cost = data.setdefault("cost", {})
+        cost["total_usd"] = cost.get("total_usd", 0.0) + amount
+        self._save(data)
+
     def add_cost(self, input_tokens: int, output_tokens: int, label: str = ""):
         data = self.load()
         cost = data.setdefault("cost", {"input_tokens": 0, "output_tokens": 0, "by_phase": {}})

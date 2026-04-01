@@ -74,3 +74,24 @@ A pivot means: new color palette, new typography, new component style, new layou
 5. **Git discipline**: Make meaningful commits as you work.
 6. **Design with intention.** Follow the spec's visual design language exactly. Do not use default templates, library defaults, or generic styling. Every visual choice must be deliberate.
 7. **Write a README.md** in the project root with: product name, one-line description, tech stack, setup instructions (backend + frontend install and run commands), and project structure overview.
+
+## Critical: Tailwind CSS v4 Compatibility
+
+If using Tailwind CSS v4 (`@import "tailwindcss"`), you MUST follow these rules:
+
+- **NEVER add a global `* { padding: 0; margin: 0; }` reset.** Tailwind v4 uses CSS `@layer` internally. Un-layered CSS (like a `*` reset) has HIGHER specificity than layered CSS, which means your reset will override ALL Tailwind utility classes (`p-4`, `px-6`, `m-2`, etc.), making them useless.
+- **Tailwind v4 includes its own reset (Preflight).** You do not need a manual CSS reset. If you must customize the base, use `@layer base { ... }` so it stays within the cascade.
+- **Quick test:** If `p-4` doesn't produce 16px padding, your CSS reset is conflicting with Tailwind.
+
+This is the #1 cause of "styling not working" bugs in generated apps.
+
+## Critical: Bash Command Safety
+
+**Every Bash command MUST complete and return.** A hanging command blocks your entire session forever.
+
+- **NEVER run servers without `timeout`.** Use: `timeout 10 bash -c 'uvicorn main:app --port 8000 &; sleep 2; curl -s http://localhost:8000/api/health; kill %1 2>/dev/null; wait 2>/dev/null'`
+- **NEVER use bare `&` + `wait`** — background processes may not terminate. Always wrap in `timeout`.
+- **NEVER use `npm run dev` or `uvicorn` without `timeout`.** These are long-running servers that will hang forever.
+- **For build verification:** `timeout 30 npm run build` is fine. Builds have a natural end.
+- **For server health checks:** Start server with `timeout`, curl it, kill it — all in one `timeout`-wrapped command.
+- **If a command takes more than 30 seconds, something is wrong.** Kill it and debug.
