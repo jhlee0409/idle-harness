@@ -1,12 +1,13 @@
 import anyio
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
 import time
 
-from cli import call_agent, AgentError, InfraError
+from cli import call_agent, AgentError, InfraError, fmt_tokens, fmt_elapsed
 from config import (
     CONFIG, CONTRACT_AGREED,
     TOOLS_READONLY, TOOLS_FULL, TOOLS_EVALUATOR,
@@ -25,6 +26,25 @@ def _check_verdict_pass(text: str) -> bool:
 def _check_contract_agreed(text: str) -> bool:
     """Match CONTRACT_AGREED only at the start of a line (not inside 'NOT AGREED')."""
     return bool(re.search(rf"^{CONTRACT_AGREED}\b", text, re.MULTILINE))
+
+
+def _slug_from_spec(spec: str) -> str:
+    match = re.search(r"^#\s+(.+)$", spec, re.MULTILINE)
+    if match:
+        name = match.group(1).strip()
+        slug = re.sub(r"[^a-z0-9\s-]", "", name.lower())
+        return re.sub(r"[\s]+", "-", slug).strip("-") or "app"
+    return "app"
+
+
+def _make_server(comms_dir: str, output_dir: str) -> DevServer:
+    return DevServer(
+        comms_dir=comms_dir,
+        output_dir=output_dir,
+        startup_wait=CONFIG["dev_server_startup_wait"],
+        health_timeout=CONFIG["dev_server_health_timeout"],
+        health_url=CONFIG["dev_server_url"],
+    )
 
 
 def _read_file(path: str) -> str:
@@ -50,7 +70,6 @@ class Orchestrator:
         self.spec_path = os.path.join(self.comms_dir, "spec.md")
         self._spec: str | None = None
         self.sprints: list[Sprint] = []
-        self.sprint_results: dict[int, bool] = {}
         self._created_dirs: set[str] = set()
 
         self._planner_prompt = None
@@ -97,26 +116,13 @@ class Orchestrator:
             self.state.add_cost_usd(cost_usd)
 
     def _init_output(self):
-        match = re.search(r"^#\s+(.+)$", self.spec, re.MULTILINE)
-        if match:
-            name = match.group(1).strip()
-            slug = re.sub(r"[^a-z0-9\s-]", "", name.lower())
-            slug = re.sub(r"[\s]+", "-", slug).strip("-")
-        else:
-            slug = "app"
-
+        slug = _slug_from_spec(self.spec)
         self.output_dir = os.path.join(self.output_base, slug)
         os.makedirs(self.output_dir, exist_ok=True)
         subprocess.run(
             ["git", "init"], cwd=self.output_dir, capture_output=True
         )
-        self.server = DevServer(
-            comms_dir=self.comms_dir,
-            output_dir=self.output_dir,
-            startup_wait=CONFIG["dev_server_startup_wait"],
-            health_timeout=CONFIG["dev_server_health_timeout"],
-            health_url=CONFIG["dev_server_url"],
-        )
+        self.server = _make_server(self.comms_dir, self.output_dir)
         _log("Harness", f"Project directory: output/{slug}/")
 
     def _sprint_dir(self, sprint: Sprint) -> str:
@@ -362,7 +368,6 @@ class Orchestrator:
                 # Delegate to user: continue or abort? (raises UserAbort)
                 _ask_user_continue(label)
 
-        self.sprint_results[sprint.number] = sprint_passed
         self.state.set_sprint_result(sprint.number, sprint_passed)
         return sprint_passed
 
@@ -562,13 +567,8 @@ def _print_required_changes(text: str):
             print(f"    {_C.RED}{display}{_C.RESET}")
 
 
-def _fmt_tokens(agent_result) -> str:
-    total = agent_result.input_tokens + agent_result.output_tokens
-    if total >= 1_000_000:
-        return f"{total / 1_000_000:.1f}M"
-    if total >= 1_000:
-        return f"{total / 1_000:.1f}k"
-    return str(total)
+def _fmt_tokens_ar(agent_result) -> str:
+    return fmt_tokens(agent_result.input_tokens + agent_result.output_tokens)
 
 
 def _fmt_cost(agent_result) -> str:
@@ -578,7 +578,7 @@ def _fmt_cost(agent_result) -> str:
 
 def _fmt_stats(agent_result, start: float) -> str:
     parts = [_elapsed(start), f"{agent_result.turns} turns"]
-    tok = _fmt_tokens(agent_result)
+    tok = _fmt_tokens_ar(agent_result)
     if tok != "0":
         parts.append(f"{tok} tokens")
     cost = _fmt_cost(agent_result)
@@ -616,13 +616,12 @@ def _ask_user_continue(label: str):
     """Ask the user whether to continue after max failures. Raises UserAbort to stop."""
     print(f"\n{_C.RED}{'=' * 60}")
     print(f"  {label} failed after {CONFIG['max_build_attempts']} attempts.")
-    print(f"  Continue to next sprint, or abort the harness?")
     print(f"{'=' * 60}{_C.RESET}")
-    try:
-        answer = input("  [c]ontinue / [a]bort (default: continue): ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = "c"
-    if answer.startswith("a"):
+    choice = _prompt_choice("Continue or abort?", [
+        ("c", "Continue to next sprint"),
+        ("a", "Abort the harness"),
+    ])
+    if choice == "a":
         _log("Harness", "User chose to abort.")
         raise UserAbort()
     _log("Harness", "User chose to continue.")
@@ -637,16 +636,7 @@ def _elapsed(start: float) -> str:
     return _elapsed_secs(int(time.time() - start))
 
 
-def _elapsed_secs(secs: int) -> str:
-    if secs < 60:
-        return f"{secs}s"
-    mins = secs // 60
-    secs = secs % 60
-    if mins < 60:
-        return f"{mins}m {secs}s"
-    hours = mins // 60
-    mins = mins % 60
-    return f"{hours}h {mins}m {secs}s"
+_elapsed_secs = fmt_elapsed
 
 
 def _ok(name: str) -> str:
@@ -691,26 +681,6 @@ def _prompt_choice(question: str, options: list[tuple[str, str]]) -> str:
 
 
 # --- Dependency checks ---
-
-def _find_mcp_server(mcp_tool: str, harness_root: str) -> str | None:
-    import json
-    search_paths = [
-        os.path.join(harness_root, ".mcp.json"),
-        os.path.join(harness_root, ".claude", "settings.json"),
-        os.path.expanduser("~/.claude.json"),
-        os.path.expanduser("~/.claude/settings.json"),
-    ]
-    for path in search_paths:
-        try:
-            with open(path) as f:
-                config = json.load(f)
-            mcp_servers = config.get("mcpServers", {})
-            if mcp_tool in mcp_servers:
-                return path
-        except (FileNotFoundError, json.JSONDecodeError):
-            continue
-    return None
-
 
 def _check_auth_mode() -> tuple[str, str]:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -789,39 +759,6 @@ def _fix_auth() -> bool:
         else:
             print(_ok("API key set for this session only"))
         return True
-
-
-def _fix_mcp(mcp_tool: str, harness_root: str) -> bool:
-    import json
-
-    # Check if npx is available (needed for MCP server)
-    npx_check = subprocess.run(["which", "npx"], capture_output=True, text=True)
-    if npx_check.returncode != 0:
-        print(_fail("npx", "npx not found. Install Node.js first."))
-        return False
-
-    mcp_json_path = os.path.join(harness_root, ".mcp.json")
-    print(f"  {_C.DIM}→ Configuring {mcp_tool} MCP in .mcp.json{_C.RESET}")
-
-    # Build the MCP config
-    mcp_config = {}
-    try:
-        with open(mcp_json_path) as f:
-            mcp_config = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-
-    servers = mcp_config.setdefault("mcpServers", {})
-    servers[mcp_tool] = {
-        "command": "npx",
-        "args": ["@anthropic-ai/mcp-server-playwright"],
-    }
-
-    with open(mcp_json_path, "w") as f:
-        json.dump(mcp_config, f, indent=2)
-
-    print(_ok(f"MCP: {mcp_tool} configured in .mcp.json"))
-    return True
 
 
 # --- Main preflight ---
@@ -938,44 +875,27 @@ def _cmd_serve():
     comms_dir = os.path.join(harness_root, CONFIG["comms_dir"])
     output_base = os.path.join(harness_root, CONFIG["output_dir"])
 
-    # Find the output directory from spec
     spec_path = os.path.join(comms_dir, "spec.md")
-    if not os.path.exists(spec_path):
+    try:
+        spec = _read_file(spec_path)
+    except FileNotFoundError:
         print(f"{_C.RED}No previous build found. Run the harness first.{_C.RESET}")
         sys.exit(1)
 
-    spec = _read_file(spec_path)
-    match = re.search(r"^#\s+(.+)$", spec, re.MULTILINE)
-    if match:
-        name = match.group(1).strip()
-        slug = re.sub(r"[^a-z0-9\s-]", "", name.lower())
-        slug = re.sub(r"[\s]+", "-", slug).strip("-")
-    else:
-        slug = "app"
-
+    slug = _slug_from_spec(spec)
     output_dir = os.path.join(output_base, slug)
     if not os.path.isdir(output_dir):
         print(f"{_C.RED}Output directory not found: {output_dir}{_C.RESET}")
         sys.exit(1)
 
-    server = DevServer(
-        comms_dir=comms_dir,
-        output_dir=output_dir,
-        startup_wait=CONFIG["dev_server_startup_wait"],
-        health_timeout=CONFIG["dev_server_health_timeout"],
-        health_url=CONFIG["dev_server_url"],
-    )
-
+    server = _make_server(comms_dir, output_dir)
     print(f"{_C.BOLD}Starting {slug}...{_C.RESET}")
     try:
         server.start()
         url = CONFIG["dev_server_url"]
         print(f"\n{_C.GREEN}{_C.BOLD}App running at {url}{_C.RESET}")
         print(f"{_C.DIM}Press Ctrl+C to stop{_C.RESET}\n")
-        # Open browser
         subprocess.run(["open", url], capture_output=True)
-        # Block until Ctrl+C
-        import signal
         signal.pause()
     except KeyboardInterrupt:
         pass

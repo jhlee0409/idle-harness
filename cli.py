@@ -30,7 +30,8 @@ class InfraError(AgentError):
     """Raised for infrastructure errors that won't be fixed by rebuilding."""
 
 
-def _fmt_tokens(n: int) -> str:
+def fmt_tokens(n: int) -> str:
+    """Format token count for display (e.g., 1.2M, 45.3k)."""
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M"
     if n >= 1_000:
@@ -38,11 +39,15 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
-def _fmt_elapsed(secs: int) -> str:
+def fmt_elapsed(secs: int) -> str:
+    """Format seconds for display (e.g., 45s, 5m 23s, 1h 30m 5s)."""
     if secs < 60:
         return f"{secs}s"
-    m, s = divmod(secs, 60)
-    return f"{m}m{s:02d}s"
+    mins, s = divmod(secs, 60)
+    if mins < 60:
+        return f"{mins}m {s}s"
+    hours, mins = divmod(mins, 60)
+    return f"{hours}h {mins}m {s}s"
 
 
 async def call_agent(
@@ -105,8 +110,8 @@ async def call_agent(
     start = time.time()
 
     def _print_status():
-        elapsed = _fmt_elapsed(int(time.time() - start))
-        total_tok = _fmt_tokens(input_tokens + output_tokens)
+        elapsed = fmt_elapsed(int(time.time() - start))
+        total_tok = fmt_tokens(input_tokens + output_tokens)
         status = f"    ↳ {elapsed} | {turn_count} turns | {total_tok} tokens"
         if cost_usd > 0:
             status += f" | ${cost_usd:.2f}"

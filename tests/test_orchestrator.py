@@ -527,4 +527,4 @@ async def test_run_simple_skips_negotiation():
         assert build_called
         assert eval_called
         # Simple mode uses sprint number 1
-        assert orch.sprint_results.get(1) is True
+        assert orch.state.get_sprint_results().get(1) is True
