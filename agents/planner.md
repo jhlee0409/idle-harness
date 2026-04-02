@@ -96,5 +96,5 @@ Goal: [...]
 9. **P0 features go in earlier sprints.** Sprint 1 always includes project scaffolding and the core feature that defines the product.
 10. **Each sprint must be independently testable.** The app must run and be usable after each sprint completes. No sprint should leave the app in a broken state.
 11. **Sprints build incrementally.** Later sprints assume all prior sprints are complete and working.
-12. **Scale sprints to complexity.** Simple app: 1-2 sprints. Typical app: 2-4 sprints. Complex app: up to 6 sprints.
+12. **Scale sprints to complexity.** Simple app: 1-2 sprints. Typical app: 2-4 sprints. Complex app: as many sprints as needed — 10+ is fine if the scope demands it.
 13. **Goal must be concrete.** "Dashboard works" is not a goal. "Users see a dashboard with real-time stats, can filter by date range, and data persists after refresh" is a goal.
