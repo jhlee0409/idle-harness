@@ -50,6 +50,10 @@ def fmt_elapsed(secs: int) -> str:
     return f"{hours}h {mins}m {s}s"
 
 
+class AgentTimeout(AgentError):
+    """Raised when a sub-agent exceeds its wall-clock timeout."""
+
+
 async def call_agent(
     system_prompt: str,
     user_prompt: str,
@@ -60,12 +64,14 @@ async def call_agent(
     max_turns: int | None = None,
     resume: str | None = None,
     disallowed_tools: list[str] | None = None,
+    timeout: int = 0,
 ) -> AgentResult:
     """Call a Claude agent. Pass resume=session_id to continue a previous session.
 
     mcp_servers: SDK-managed MCP servers (launched automatically, no user setup needed).
                  Example: {"playwright": {"command": "npx", "args": ["@playwright/mcp@latest"]}}
     mcp_tools: Legacy — references MCP servers from user's Claude CLI config.
+    timeout: Wall-clock timeout in seconds. 0 = no limit. Raises AgentTimeout on expiry.
     """
     tools = list(allowed_tools)
     if mcp_tools:
@@ -125,38 +131,48 @@ async def call_agent(
 
     ticker_task = asyncio.create_task(_ticker())
     try:
-        async for message in query(prompt=user_prompt, options=options):
-            # Capture session_id from init message (per SDK docs)
-            if hasattr(message, "subtype") and getattr(message, "subtype", "") == "init":
-                sid = getattr(message, "session_id", "")
-                if sid:
-                    session_id = sid
-            if isinstance(message, AssistantMessage):
-                turn_count += 1
-                usage = getattr(message, "usage", None)
-                if usage:
-                    input_tokens += getattr(usage, "input_tokens", 0)
-                    output_tokens += getattr(usage, "output_tokens", 0)
-                _print_status()
-            if isinstance(message, ResultMessage):
-                result_text = message.result
-                # Fallback: some SDK versions put session info on ResultMessage
-                if not session_id:
-                    session_id = getattr(message, "session_id", "") or getattr(message, "conversation_id", "") or ""
-                # Extract final usage/cost from ResultMessage
-                cost_usd = getattr(message, "total_cost_usd", 0.0) or 0.0
-                duration_ms = getattr(message, "duration_ms", 0) or 0
-                num_turns = getattr(message, "num_turns", 0) or 0
-                if num_turns:
-                    turn_count = num_turns
-                ru = getattr(message, "usage", None)
-                if ru:
-                    ri = getattr(ru, "input_tokens", 0) or 0
-                    ro = getattr(ru, "output_tokens", 0) or 0
-                    if ri > input_tokens:
-                        input_tokens = ri
-                    if ro > output_tokens:
-                        output_tokens = ro
+        async with asyncio.timeout(timeout if timeout > 0 else None):
+            async for message in query(prompt=user_prompt, options=options):
+                # Capture session_id from init message (per SDK docs)
+                if hasattr(message, "subtype") and getattr(message, "subtype", "") == "init":
+                    sid = getattr(message, "session_id", "")
+                    if sid:
+                        session_id = sid
+                if isinstance(message, AssistantMessage):
+                    turn_count += 1
+                    usage = getattr(message, "usage", None)
+                    if usage:
+                        input_tokens += getattr(usage, "input_tokens", 0)
+                        output_tokens += getattr(usage, "output_tokens", 0)
+                    _print_status()
+                if isinstance(message, ResultMessage):
+                    result_text = message.result
+                    # Fallback: some SDK versions put session info on ResultMessage
+                    if not session_id:
+                        session_id = getattr(message, "session_id", "") or getattr(message, "conversation_id", "") or ""
+                    # Extract final usage/cost from ResultMessage
+                    cost_usd = getattr(message, "total_cost_usd", 0.0) or 0.0
+                    duration_ms = getattr(message, "duration_ms", 0) or 0
+                    num_turns = getattr(message, "num_turns", 0) or 0
+                    if num_turns:
+                        turn_count = num_turns
+                    ru = getattr(message, "usage", None)
+                    if ru:
+                        ri = getattr(ru, "input_tokens", 0) or 0
+                        ro = getattr(ru, "output_tokens", 0) or 0
+                        if ri > input_tokens:
+                            input_tokens = ri
+                        if ro > output_tokens:
+                            output_tokens = ro
+    except TimeoutError:
+        ticker_task.cancel()
+        sys.stdout.write("\r" + " " * 80 + "\r")
+        elapsed = int(time.time() - start)
+        raise AgentTimeout(
+            f"Agent timed out after {fmt_elapsed(elapsed)} ({turn_count} turns, "
+            f"{fmt_tokens(input_tokens + output_tokens)} tokens). "
+            f"The agent may be stuck on a hanging command."
+        )
     except Exception as exc:
         ticker_task.cancel()
         sys.stdout.write("\r" + " " * 80 + "\r")  # clear progress line

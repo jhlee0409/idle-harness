@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-from cli import call_agent, AgentError, InfraError, fmt_tokens, fmt_elapsed
+from cli import call_agent, AgentError, AgentTimeout, InfraError, fmt_tokens, fmt_elapsed
 from config import (
     CONFIG, CONTRACT_AGREED,
     TOOLS_READONLY, TOOLS_FULL, TOOLS_EVALUATOR,
@@ -163,6 +163,7 @@ class Orchestrator:
             user_prompt=prompt,
             allowed_tools=TOOLS_READONLY,
             cwd=self.root,
+            timeout=CONFIG["agent_timeout_planner"],
         )
         self._track_cost(agent_result, "planner")
 
@@ -211,6 +212,7 @@ class Orchestrator:
                 user_prompt=gen_prompt,
                 allowed_tools=TOOLS_READONLY,
                 cwd=self.root,
+                timeout=CONFIG["agent_timeout_negotiate"],
             )
             self._track_cost(gen_result, "negotiate")
 
@@ -229,6 +231,7 @@ class Orchestrator:
                 user_prompt=eval_prompt,
                 allowed_tools=TOOLS_EVALUATOR,
                 cwd=self.root,
+                timeout=CONFIG["agent_timeout_negotiate"],
             )
             self._track_cost(eval_result, "negotiate")
 
@@ -290,6 +293,7 @@ class Orchestrator:
                 cwd=self.output_dir,
                 max_turns=CONFIG["generator_max_turns"],
                 resume=self._generator_session_id,
+                timeout=CONFIG["agent_timeout_build"],
             )
         except AgentError:
             # Reset conversation — crashed session can't be resumed
@@ -334,6 +338,7 @@ class Orchestrator:
                 allowed_tools=TOOLS_EVALUATOR,
                 mcp_servers=CONFIG.get("mcp_servers"),
                 cwd=self.root,
+                timeout=CONFIG["agent_timeout_eval"],
             )
             self._track_cost(eval_result, "eval")
 
@@ -460,6 +465,7 @@ class Orchestrator:
                     allowed_tools=TOOLS_EVALUATOR,
                     mcp_servers=CONFIG.get("mcp_servers"),
                     cwd=self.root,
+                    timeout=CONFIG["agent_timeout_integration"],
                 )
                 self._track_cost(eval_result, "integration_eval")
 

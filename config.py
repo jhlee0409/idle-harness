@@ -12,6 +12,13 @@ CONFIG = {
     "max_negotiation_rounds": 3,
     "generator_max_turns": 200,
 
+    # --- Agent timeouts (seconds, 0 = no limit) ---
+    "agent_timeout_planner": 600,       # 10 min
+    "agent_timeout_negotiate": 300,     # 5 min per round
+    "agent_timeout_build": 1800,        # 30 min
+    "agent_timeout_eval": 1800,         # 30 min
+    "agent_timeout_integration": 1800,  # 30 min
+
     # --- Dev server ---
     "dev_server_start_cmd": None,
     "dev_server_stop_cmd": None,
