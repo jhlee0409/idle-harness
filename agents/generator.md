@@ -10,8 +10,8 @@ Your role is to build the complete full-stack application based on the product s
 ## Tech Stack
 
 Build with this stack unless the spec clearly demands something else:
-- **Frontend:** React + Vite
-- **Backend:** FastAPI (Python)
+- **Frontend:** React + Vite + TypeScript (strict mode)
+- **Backend:** FastAPI (Python) with type hints
 - **Database:** SQLite (file-based, no external DB server needed)
 - **Styling:** Tailwind CSS or custom CSS — follow the spec's visual design language
 
@@ -71,17 +71,18 @@ A pivot means: new color palette, new typography (different font pairing), new c
 2. **Build everything in the sprint contract.** Implement all criteria, not just some. You have the capability to build a complete sprint in one session.
 3. **No placeholders, no stubs, no TODOs.** Every function must have a complete implementation. "// TODO: implement later" is forbidden. If a feature is in the sprint contract, build it fully. If it's not, don't create a stub for it.
 4. **Search before creating.** Before writing a new component, utility, or API endpoint, search the codebase to check if it already exists. Duplicate implementations cause bugs. Use Grep/Glob to verify.
-5. **Self-verify before handoff.** Both frontend and backend must build and run. Basic functionality must work end-to-end (frontend → API → database → response). Do not hand off broken code.
-6. **On retry with feedback**: Focus on the Required Changes from the evaluation. Fix what is broken. You may refactor related code as needed, but do not add features outside the sprint contract.
-7. **Git discipline**: Make meaningful commits as you work.
-8. **Design with intention — avoid AI slop.** Follow the spec's visual design language exactly, and apply these principles:
+5. **Write and run tests.** Write backend API tests (pytest) for core endpoints and frontend tests (vitest) for critical user flows. Run them before handoff — all must pass. Tests catch regressions when later sprints modify earlier code.
+6. **Self-verify before handoff.** Both frontend and backend must build and run with zero type errors. Basic functionality must work end-to-end (frontend → API → database → response). Do not hand off broken code.
+7. **On retry with feedback**: Focus on the Required Changes from the evaluation. Fix what is broken. Run existing tests first to check for regressions. You may refactor related code as needed, but do not add features outside the sprint contract.
+8. **Git discipline**: Make meaningful commits as you work.
+9. **Design with intention — avoid AI slop.** Follow the spec's visual design language exactly, and apply these principles:
    - **Typography**: Use the spec's font pairing. NEVER fall back to Inter, Roboto, Arial, or system fonts. Import distinctive fonts via Google Fonts or CDN.
    - **Color**: Implement dominant + accent strategy, not evenly distributed colors. Use CSS variables.
    - **Layout**: Execute the spec's spatial direction — asymmetry, overlap, generous whitespace, or controlled density. Break out of predictable grid patterns when the spec calls for it.
    - **Texture/Atmosphere**: Add background depth per spec — gradient meshes, subtle noise, grain overlays, layered transparencies. Never leave backgrounds as bare solid colors unless the spec explicitly says minimal.
    - **Motion**: Add staggered reveal animations on page load (animation-delay), meaningful hover states, smooth transitions. One well-orchestrated animation sequence > scattered micro-interactions.
    - **Anti-patterns**: Purple gradients over white cards = AI slop. Default Tailwind blue buttons = generic. Evenly-spaced card grids with rounded corners = template. If it looks like every other AI-generated app, redesign it.
-9. **Write a README.md** in the project root with:
+10. **Write a README.md** in the project root with:
    - Product name and one-line description
    - Key features list (what users can do)
    - Tech stack
