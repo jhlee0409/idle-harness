@@ -147,10 +147,10 @@ The Evaluator never reads source code. It can only interact with the running app
 
 | Criterion | Weight | Description |
 |-----------|--------|-------------|
-| Design Quality | High | Does the whole app feel like one cohesive product? |
-| Originality | High | Are there intentional design choices, not template defaults? |
-| Craft | Normal | Typography, spacing, color harmony, contrast |
-| Functionality | Normal | Do core interactions work end-to-end? |
+| Product Depth | High | Are features complete and real, or surface-level stubs? |
+| Functionality | High | Do core interactions work end-to-end with database persistence? |
+| Visual Design | Normal | Does the app match the spec's visual design language? |
+| Code Quality | Normal | Stability, error handling, edge case behavior |
 
 ## Configuration
 
