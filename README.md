@@ -19,7 +19,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Interactive setup — configures auth + Playwright MCP automatically
+# Interactive setup — configures auth automatically
 python orchestrator.py --setup
 
 # Build an app
@@ -48,9 +48,9 @@ Preflight checks
   ✓ npm (10.2.4)
   ✓ git (2.43.0)
   ✗ auth — No auth configured
-  ✗ MCP: playwright — 'playwright' not configured
+  ✓ MCP: playwright (SDK-managed via npx)
 
-  Fix 2 issue(s) automatically? [Y/n]: y
+  Fix 1 issue(s) automatically? [Y/n]: y
 
   Choose auth method:
     [o] OAuth login (uses subscription quota)
@@ -58,9 +58,6 @@ Preflight checks
   Choose: o
   → Running: claude login
   ✓ OAuth authenticated
-
-  → Configuring playwright MCP in .mcp.json
-  ✓ MCP: playwright configured in .mcp.json
 
 All issues fixed
 ```
@@ -102,7 +99,7 @@ python orchestrator.py clean --all
 | `node`, `npm`, `git` | No | Prints install link |
 | Claude CLI | No | Prints install link |
 | Auth (OAuth or API key) | Yes | `claude login` or API key input |
-| Playwright MCP | Yes | Writes `.mcp.json` automatically |
+| Playwright MCP | Automatic | SDK launches via npx — no user config needed |
 
 ### Authentication options
 
