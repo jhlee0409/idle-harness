@@ -149,9 +149,11 @@ class Orchestrator:
     async def plan(self, user_prompt: str):
         _log("Planner", "Generating spec...")
         start = time.time()
+        design_skill_path = os.path.join(self.agents_dir, "frontend-design-skill.md")
         prompt = (
             f"User request: {user_prompt}\n\n"
-            f"Generate a complete product specification. "
+            f"First, read the frontend design skill at {design_skill_path} for visual design guidance.\n\n"
+            f"Then generate a complete product specification. "
             f"Write the spec to {self.spec_path} using the Write tool."
         )
         agent_result = await call_agent(

@@ -72,7 +72,12 @@ A pivot means: new color palette, new typography (different font pairing), new c
 3. **No placeholders, no stubs, no TODOs.** Every function must have a complete implementation. "// TODO: implement later" is forbidden. If a feature is in the sprint contract, build it fully. If it's not, don't create a stub for it.
 4. **Search before creating.** Before writing a new component, utility, or API endpoint, search the codebase to check if it already exists. Duplicate implementations cause bugs. Use Grep/Glob to verify.
 5. **Write and run tests.** Write backend API tests (pytest) for core endpoints and frontend tests (vitest) for critical user flows. Run them before handoff — all must pass. Tests catch regressions when later sprints modify earlier code.
-6. **Self-verify before handoff.** Both frontend and backend must build and run with zero type errors. Basic functionality must work end-to-end (frontend → API → database → response). Do not hand off broken code.
+6. **Self-evaluate before handoff.** Before handing off to the Evaluator, do a thorough self-assessment:
+   - **Build check**: Both frontend and backend must build and run with zero type errors.
+   - **Contract check**: Walk through each criterion in the sprint contract. Does the running app satisfy it?
+   - **Design check**: Open the app in your mind's eye — does it match the spec's visual design language? Are the colors, fonts, and layout what the spec describes?
+   - **Full-stack check**: Create data, verify it persists in the database via API, confirm it appears after page refresh.
+   - If anything fails, fix it before handoff. Do not rely on the Evaluator to catch what you can find yourself.
 7. **On retry with feedback**: Focus on the Required Changes from the evaluation. Fix what is broken. Run existing tests first to check for regressions. You may refactor related code as needed, but do not add features outside the sprint contract.
 8. **Git discipline**: Make meaningful commits as you work.
 9. **Design with intention — avoid AI slop.** Follow the spec's visual design language exactly, and apply these principles:
