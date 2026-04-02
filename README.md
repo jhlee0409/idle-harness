@@ -116,7 +116,7 @@ User Prompt (1-4 sentences)
 ┌─────────┐     ┌───────────┐     ┌───────────┐
 │ Planner │ ──→ │ Generator │ ←─→ │ Evaluator │
 │         │     │           │     │           │
-│ Spec    │     │ React     │     │ Browser   │
+│ Spec    │     │ React+TS  │     │ Browser   │
 │ Design  │     │ Vite      │     │ Testing   │
 │ Language│     │ FastAPI   │     │ Screenshot│
 │         │     │ SQLite    │     │ Grading   │
@@ -125,11 +125,12 @@ User Prompt (1-4 sentences)
               Build → Evaluate → Feedback Loop (max 3 rounds)
 ```
 
-1. **Plan** — Planner expands the prompt into a full product spec (including visual design language)
+1. **Plan** — Planner reads the frontend design skill, then expands the prompt into a full product spec with visual design language
 2. **Negotiate** — Generator and Evaluator negotiate sprint contracts with testable criteria
-3. **Build** — Generator implements the full-stack app (continuous session preserves context across retries)
-4. **Evaluate** — Evaluator tests the running app via Playwright, collecting screenshot evidence
+3. **Build** — Generator implements the full-stack app in TypeScript + FastAPI, writes and runs tests (continuous session preserves context across retries)
+4. **Evaluate** — Evaluator tests the running app via Playwright, grading on product depth, functionality, visual design, and code quality
 5. **Iterate** — On FAIL, feedback is returned to the Generator for another attempt (up to 3 rounds)
+6. **Integration** — After all sprints, a final cross-sprint evaluation verifies the complete application works together
 
 ### The GAN Principle
 
@@ -139,9 +140,9 @@ The Evaluator never reads source code. It can only interact with the running app
 
 | Agent | Role | Key Behavior |
 |-------|------|-------------|
-| **Planner** | Prompt → Product Spec | Defines visual design language, explores AI integration opportunities, excludes technical details |
-| **Generator** | Spec → Full-Stack Implementation | React+Vite+FastAPI+SQLite, self-verifies before handoff |
-| **Evaluator** | Browser-Tests the Running App | Never reads source code (GAN principle), screenshot evidence, grades on 4 criteria |
+| **Planner** | Prompt → Product Spec | Reads frontend design skill, defines visual design language, explores AI integration, high-level technical design (no implementation details) |
+| **Generator** | Spec → Full-Stack Implementation | React+Vite+TypeScript+FastAPI+SQLite, writes tests (pytest+vitest), self-evaluates before handoff |
+| **Evaluator** | Browser-Tests the Running App | Never reads source code (GAN principle), screenshot evidence, detects stubs/fakes, grades on 4 full-stack criteria |
 
 ## Evaluation Criteria
 
@@ -176,9 +177,10 @@ idle-harness/
 ├── server.py            # Dev server start/stop
 ├── sprint.py            # Sprint parsing
 ├── agents/
-│   ├── planner.md       # Planner system prompt
-│   ├── generator.md     # Generator system prompt
-│   └── evaluator.md     # Evaluator system prompt
+│   ├── planner.md                # Planner system prompt
+│   ├── generator.md              # Generator system prompt
+│   ├── evaluator.md              # Evaluator system prompt
+│   └── frontend-design-skill.md  # Design skill (Planner reads at runtime)
 ├── tests/               # pytest tests
 ├── comms/               # Runtime artifacts (spec, contracts, evaluations)
 └── output/              # Generated applications
