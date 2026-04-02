@@ -179,6 +179,7 @@ class Orchestrator:
         self.state.set_sprint_info(current=0, total=len(self.sprints))
         self.state.set_phase("building")
         _log("Planner", f"Spec generated — {len(self.sprints)} sprint(s). ({_fmt_stats(agent_result, start)})")
+        _print_spec_summary(self.spec, self.sprints)
 
     async def negotiate_contract(self, sprint: Sprint) -> str:
         sprint_dir = self._sprint_dir(sprint)
@@ -301,6 +302,7 @@ class Orchestrator:
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "build", elapsed)
         _log("Generator", f"Sprint {sprint.number} — Build complete. ({_fmt_stats(agent_result, start)})")
+        _print_build_summary(self.output_dir)
 
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
         contract = _read_file(contract_path)
@@ -350,6 +352,8 @@ class Orchestrator:
             _log("Evaluator", f"Sprint {sprint.number} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
         else:
             _log("Evaluator", f"Sprint {sprint.number} — {_C.RED}{_C.BOLD}FAIL{_C.RESET} ({stats})")
+        _print_eval_summary(eval_result.result)
+        if not passed:
             _print_required_changes(eval_result.result)
         return passed
 
@@ -587,6 +591,83 @@ class Orchestrator:
             print(f"\n    # Or use the serve command:")
             print(f"    python orchestrator.py serve")
             print()
+
+
+def _print_spec_summary(spec: str, sprints: list):
+    """Print key info from the generated spec."""
+    # Product name
+    match = re.search(r"^#\s+(.+)$", spec, re.MULTILINE)
+    name = match.group(1).strip() if match else "Unknown"
+
+    # Count features (### P0/P1/P2 sections)
+    features = len(re.findall(r"^### P\d+:", spec, re.MULTILINE))
+
+    # Aesthetic direction
+    direction = ""
+    in_aesthetic = False
+    for line in spec.split("\n"):
+        stripped = line.strip()
+        if "aesthetic direction" in stripped.lower():
+            in_aesthetic = True
+            continue
+        if in_aesthetic and stripped and not stripped.startswith("#"):
+            direction = stripped[:60]
+            break
+
+    print(f"    {_C.DIM}Product: {name}{_C.RESET}")
+    print(f"    {_C.DIM}Features: {features} (P0/P1/P2){_C.RESET}")
+    if direction:
+        print(f"    {_C.DIM}Design: {direction}{_C.RESET}")
+    sprint_names = ", ".join(f"{s.number}:{s.name}" for s in sprints)
+    print(f"    {_C.DIM}Sprints: {sprint_names}{_C.RESET}")
+
+
+def _print_build_summary(output_dir: str):
+    """Print a brief summary of what exists in the output directory."""
+    if not output_dir or not os.path.isdir(output_dir):
+        return
+    has_backend = os.path.isdir(os.path.join(output_dir, "backend"))
+    has_frontend = os.path.isdir(os.path.join(output_dir, "frontend"))
+
+    # Count recent git commits
+    result = subprocess.run(
+        ["git", "log", "--oneline", "-5"],
+        cwd=output_dir, capture_output=True, text=True,
+    )
+    commits = result.stdout.strip().split("\n") if result.returncode == 0 and result.stdout.strip() else []
+
+    parts = []
+    if has_frontend:
+        parts.append("frontend")
+    if has_backend:
+        parts.append("backend")
+    stack = " + ".join(parts) if parts else "project"
+
+    print(f"    {_C.DIM}Stack: {stack}{_C.RESET}")
+    if commits:
+        print(f"    {_C.DIM}Recent commits: {len(commits)}{_C.RESET}")
+        for c in commits[:3]:
+            print(f"    {_C.DIM}  {c}{_C.RESET}")
+
+
+def _print_eval_summary(eval_text: str):
+    """Print feature pass rate and design assessment from evaluation."""
+    # Feature pass rate
+    rate_match = re.search(r"Feature Pass Rate:\s*(\d+/\d+\s*\(\d+%?\))", eval_text)
+    if rate_match:
+        print(f"    {_C.DIM}Features: {rate_match.group(1)}{_C.RESET}")
+
+    # Design assessment table — extract verdicts
+    criteria = ["Product Depth", "Functionality", "Visual Design", "Code Quality"]
+    verdicts = []
+    for c in criteria:
+        match = re.search(rf"\|\s*{c}\s*\|\s*(PASS|FAIL)\s*\|", eval_text)
+        if match:
+            v = match.group(1)
+            color = _C.GREEN if v == "PASS" else _C.RED
+            verdicts.append(f"{c}: {color}{v}{_C.RESET}")
+    if verdicts:
+        print(f"    {_C.DIM}{' | '.join(verdicts)}{_C.RESET}")
 
 
 def _print_contract_summary(contract_path: str):
