@@ -129,6 +129,15 @@ class Orchestrator:
 
     def setup(self):
         os.makedirs(self.output_base, exist_ok=True)
+        # Clean stale artifacts from previous runs to prevent data leakage
+        sprints_dir = os.path.join(self.comms_dir, "sprints")
+        if os.path.isdir(sprints_dir):
+            shutil.rmtree(sprints_dir)
+        for stale in ("spec.md", "dev_server.json", "integration_evaluation.md"):
+            path = os.path.join(self.comms_dir, stale)
+            if os.path.exists(path):
+                os.remove(path)
+        self._created_dirs.clear()
         self.state.init()
 
     async def plan(self, user_prompt: str):
@@ -507,6 +516,33 @@ class Orchestrator:
 
         print(f"  Total time:     {_elapsed(total_start)}")
         print("=" * 60)
+
+        # Next Steps
+        if self.output_dir and os.path.isdir(self.output_dir):
+            print(f"\n{_C.BOLD}  Next Steps{_C.RESET}")
+            print(f"  {'─' * 40}")
+            rel_output = os.path.relpath(self.output_dir)
+            # Detect project structure for run commands
+            has_backend = os.path.isdir(os.path.join(self.output_dir, "backend"))
+            has_frontend = os.path.isdir(os.path.join(self.output_dir, "frontend"))
+            has_root_pkg = os.path.exists(os.path.join(self.output_dir, "package.json"))
+
+            if has_backend and has_frontend:
+                print(f"    cd {rel_output}")
+                print(f"    cd backend && pip install -r requirements.txt && cd ..")
+                print(f"    cd frontend && npm install && cd ..")
+                print(f"    # Start servers:")
+                print(f"    cd backend && uvicorn main:app --reload --port 8000 &")
+                print(f"    cd frontend && npm run dev")
+            elif has_root_pkg:
+                print(f"    cd {rel_output}")
+                print(f"    npm install && npm run dev")
+            else:
+                print(f"    cd {rel_output}")
+
+            print(f"\n    # Or use the serve command:")
+            print(f"    python orchestrator.py serve")
+            print()
 
 
 def _print_required_changes(text: str):
@@ -898,17 +934,106 @@ def _preflight(force_setup: bool = False):
     sys.exit(1)
 
 
+def _cmd_serve():
+    """Start the last-built app's dev servers."""
+    harness_root = get_harness_root()
+    comms_dir = os.path.join(harness_root, CONFIG["comms_dir"])
+    output_base = os.path.join(harness_root, CONFIG["output_dir"])
+
+    # Find the output directory from spec
+    spec_path = os.path.join(comms_dir, "spec.md")
+    if not os.path.exists(spec_path):
+        print(f"{_C.RED}No previous build found. Run the harness first.{_C.RESET}")
+        sys.exit(1)
+
+    spec = _read_file(spec_path)
+    match = re.search(r"^#\s+(.+)$", spec, re.MULTILINE)
+    if match:
+        name = match.group(1).strip()
+        slug = re.sub(r"[^a-z0-9\s-]", "", name.lower())
+        slug = re.sub(r"[\s]+", "-", slug).strip("-")
+    else:
+        slug = "app"
+
+    output_dir = os.path.join(output_base, slug)
+    if not os.path.isdir(output_dir):
+        print(f"{_C.RED}Output directory not found: {output_dir}{_C.RESET}")
+        sys.exit(1)
+
+    server = DevServer(
+        comms_dir=comms_dir,
+        output_dir=output_dir,
+        startup_wait=CONFIG["dev_server_startup_wait"],
+        health_timeout=CONFIG["dev_server_health_timeout"],
+        health_url=CONFIG["dev_server_url"],
+    )
+
+    print(f"{_C.BOLD}Starting {slug}...{_C.RESET}")
+    try:
+        server.start()
+        url = CONFIG["dev_server_url"]
+        print(f"\n{_C.GREEN}{_C.BOLD}App running at {url}{_C.RESET}")
+        print(f"{_C.DIM}Press Ctrl+C to stop{_C.RESET}\n")
+        # Open browser
+        subprocess.run(["open", url], capture_output=True)
+        # Block until Ctrl+C
+        import signal
+        signal.pause()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print(f"\n{_C.DIM}Stopping servers...{_C.RESET}")
+        server.stop()
+        print("Stopped.")
+
+
+def _cmd_clean(clean_all: bool = False):
+    """Clean comms/ artifacts. With --all, also cleans output/."""
+    harness_root = get_harness_root()
+    comms_dir = os.path.join(harness_root, CONFIG["comms_dir"])
+    output_base = os.path.join(harness_root, CONFIG["output_dir"])
+
+    cleaned = []
+    # Clean comms/
+    if os.path.isdir(comms_dir):
+        shutil.rmtree(comms_dir)
+        cleaned.append("comms/")
+
+    if clean_all and os.path.isdir(output_base):
+        shutil.rmtree(output_base)
+        cleaned.append("output/")
+
+    if cleaned:
+        print(f"{_C.GREEN}Cleaned: {', '.join(cleaned)}{_C.RESET}")
+    else:
+        print("Nothing to clean.")
+
+
 def main():
-    if len(sys.argv) >= 2 and sys.argv[1] == "--setup":
+    cmd = sys.argv[1] if len(sys.argv) >= 2 else ""
+
+    if cmd == "--setup":
         _preflight(force_setup=True)
         print("Setup complete. Run:")
         print(f"  python orchestrator.py \"your app idea\"")
         return
 
-    if len(sys.argv) < 2:
+    if cmd == "serve":
+        _cmd_serve()
+        return
+
+    if cmd == "clean":
+        clean_all = "--all" in sys.argv
+        _cmd_clean(clean_all)
+        return
+
+    if not cmd or cmd.startswith("-"):
         print(f"{_C.BOLD}Idle Harness{_C.RESET} — GAN-inspired multi-agent app builder\n")
         print("Usage:")
         print(f"  python orchestrator.py \"your app idea\"    Build an app")
+        print(f"  python orchestrator.py serve               Start the last-built app")
+        print(f"  python orchestrator.py clean               Clean comms/ artifacts")
+        print(f"  python orchestrator.py clean --all         Clean comms/ and output/")
         print(f"  python orchestrator.py --setup             Interactive setup")
         print(f"\nEnvironment:")
         print(f"  CI=1                                       Non-interactive mode")

@@ -24,6 +24,9 @@ python orchestrator.py --setup
 
 # Build an app
 python orchestrator.py "A tarot reading web app with card-draw animations and AI interpretations"
+
+# After build — start the app
+python orchestrator.py serve
 ```
 
 That's it. If anything is missing, the harness detects it and offers to fix it automatically.
@@ -77,6 +80,19 @@ CI=1 python orchestrator.py "my app idea"
 ```
 
 Fails hard with exit code 1 if any dependency is missing. No interactive prompts.
+
+### Other commands
+
+```bash
+# Start the last-built app (opens browser automatically)
+python orchestrator.py serve
+
+# Clean runtime artifacts for a fresh run
+python orchestrator.py clean
+
+# Clean everything including generated apps
+python orchestrator.py clean --all
+```
 
 ### What gets checked
 
