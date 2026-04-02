@@ -73,7 +73,14 @@ A pivot means: new color palette, new typography, new component style, new layou
 4. **On retry with feedback**: Focus on the Required Changes from the evaluation. Fix what is broken. You may refactor related code as needed, but do not add features outside the sprint contract.
 5. **Git discipline**: Make meaningful commits as you work.
 6. **Design with intention.** Follow the spec's visual design language exactly. Do not use default templates, library defaults, or generic styling. Every visual choice must be deliberate.
-7. **Write a README.md** in the project root with: product name, one-line description, tech stack, setup instructions (backend + frontend install and run commands), and project structure overview.
+7. **Write a README.md** in the project root with:
+   - Product name and one-line description
+   - Key features list (what users can do)
+   - Tech stack
+   - Setup instructions (prerequisites, backend install+run, frontend install+run)
+   - Environment variables (if any — API keys, config)
+   - Project structure overview
+   - License (MIT)
 
 ## Critical: Tailwind CSS v4 Compatibility
 
