@@ -26,6 +26,12 @@ CONFIG = {
 
     # --- MCP / tools ---
     "mcp_tool": "playwright",
+    "mcp_servers": {
+        "playwright": {
+            "command": "npx",
+            "args": ["@anthropic-ai/mcp-server-playwright"],
+        },
+    },
 }
 
 CONTRACT_AGREED = "AGREED"

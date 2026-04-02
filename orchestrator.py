@@ -314,7 +314,7 @@ class Orchestrator:
                 system_prompt=self.evaluator_prompt,
                 user_prompt=prompt,
                 allowed_tools=TOOLS_EVALUATOR,
-                mcp_tools=[CONFIG["mcp_tool"]],
+                mcp_servers=CONFIG.get("mcp_servers"),
                 cwd=self.root,
             )
             self._track_cost(eval_result, "eval")
@@ -428,7 +428,7 @@ class Orchestrator:
                     system_prompt=self.evaluator_prompt,
                     user_prompt=prompt,
                     allowed_tools=TOOLS_EVALUATOR,
-                    mcp_tools=[CONFIG["mcp_tool"]],
+                    mcp_servers=CONFIG.get("mcp_servers"),
                     cwd=self.root,
                 )
                 self._track_cost(eval_result, "integration_eval")
@@ -879,17 +879,14 @@ def _preflight(force_setup: bool = False):
         print(_fail("auth", hint))
         issues.append(("auth", hint, _fix_auth if has_cli else None))
 
-    # 5. MCP server
-    mcp_tool = CONFIG["mcp_tool"]
-    harness_root = get_harness_root()
-    mcp_path = _find_mcp_server(mcp_tool, harness_root)
-    if mcp_path:
-        rel = os.path.relpath(mcp_path, harness_root) if mcp_path.startswith(harness_root) else mcp_path
-        print(_ok(f"MCP: {mcp_tool} ({rel})"))
+    # 5. MCP: SDK launches Playwright MCP automatically — just need npx
+    npx_result = subprocess.run(["which", "npx"], capture_output=True, text=True)
+    if npx_result.returncode == 0:
+        print(_ok(f"MCP: {CONFIG['mcp_tool']} (SDK-managed via npx)"))
     else:
-        hint = f"'{mcp_tool}' not configured"
-        print(_fail(f"MCP: {mcp_tool}", hint))
-        issues.append((f"MCP: {mcp_tool}", hint, lambda: _fix_mcp(mcp_tool, harness_root)))
+        hint = "npx not found. Install Node.js 18+: https://nodejs.org"
+        print(_fail(f"MCP: {CONFIG['mcp_tool']}", hint))
+        issues.append(("npx", hint, None))
 
     # All good
     if not issues:

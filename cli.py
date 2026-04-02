@@ -51,11 +51,17 @@ async def call_agent(
     allowed_tools: list[str],
     cwd: str,
     mcp_tools: list[str] | None = None,
+    mcp_servers: dict | None = None,
     max_turns: int | None = None,
     resume: str | None = None,
     disallowed_tools: list[str] | None = None,
 ) -> AgentResult:
-    """Call a Claude agent. Pass resume=conversation_id to continue a previous session."""
+    """Call a Claude agent. Pass resume=session_id to continue a previous session.
+
+    mcp_servers: SDK-managed MCP servers (launched automatically, no user setup needed).
+                 Example: {"playwright": {"command": "npx", "args": ["@playwright/mcp@latest"]}}
+    mcp_tools: Legacy — references MCP servers from user's Claude CLI config.
+    """
     tools = list(allowed_tools)
     if mcp_tools:
         for mcp in mcp_tools:
@@ -77,6 +83,9 @@ async def call_agent(
         max_buffer_size=10 * 1024 * 1024,  # 10MB — allows screenshot responses
         stderr=_capture_stderr,
     )
+
+    if mcp_servers:
+        options.mcp_servers = mcp_servers
 
     if disallowed_tools:
         options.disallowed_tools = disallowed_tools
