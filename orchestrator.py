@@ -620,6 +620,57 @@ def _preflight_fail(name: str, hint: str) -> str:
     return f"  {_C.RED}✗{_C.RESET} {name} — {hint}"
 
 
+def _find_mcp_server(mcp_tool: str, harness_root: str) -> str | None:
+    """Search for MCP server config in project-level and global settings. Returns the path found."""
+    import json
+    search_paths = [
+        # Project-level (highest priority)
+        os.path.join(harness_root, ".mcp.json"),
+        os.path.join(harness_root, ".claude", "settings.json"),
+        # Global
+        os.path.expanduser("~/.claude.json"),
+        os.path.expanduser("~/.claude/settings.json"),
+    ]
+    for path in search_paths:
+        try:
+            with open(path) as f:
+                config = json.load(f)
+            mcp_servers = config.get("mcpServers", {})
+            if mcp_tool in mcp_servers:
+                return path
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    return None
+
+
+def _check_auth_mode() -> tuple[str, str]:
+    """Detect authentication mode. Returns (mode, detail)."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if api_key:
+        masked = api_key[:8] + "..." + api_key[-4:] if len(api_key) > 12 else "***"
+        return "api", masked
+
+    # Check OAuth via Claude CLI
+    result = subprocess.run(
+        ["claude", "--version"], capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return "none", ""
+
+    version = result.stdout.strip() or "installed"
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "echo ok", "--max-turns", "1"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            return "oauth", version
+    except subprocess.TimeoutExpired:
+        pass
+
+    return "cli_no_auth", version
+
+
 def _preflight():
     """Check all required dependencies before running."""
     print(f"{_C.BOLD}Preflight checks{_C.RESET}")
@@ -649,50 +700,36 @@ def _preflight():
             print(_preflight_fail(cmd, install_hint))
             errors.append(f"'{cmd}' not found. {install_hint}")
 
-    # Claude CLI
-    result = subprocess.run(
-        ["claude", "--version"], capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        msg = "Not found. Install: https://docs.anthropic.com/en/docs/claude-code"
-        print(_preflight_fail("claude cli", msg))
+    # Auth: OAuth or API key
+    auth_mode, auth_detail = _check_auth_mode()
+    if auth_mode == "api":
+        print(_preflight_ok(f"auth: API key ({auth_detail})"))
+    elif auth_mode == "oauth":
+        print(_preflight_ok(f"auth: OAuth via Claude CLI ({auth_detail})"))
+    elif auth_mode == "cli_no_auth":
+        msg = "Claude CLI found but not authenticated. Run: claude login  OR  set ANTHROPIC_API_KEY"
+        print(_preflight_fail("auth", msg))
         errors.append(msg)
     else:
-        version = result.stdout.strip() or "installed"
-        result = subprocess.run(
-            ["claude", "-p", "echo ok", "--max-turns", "1"],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode == 0:
-            print(_preflight_ok(f"claude cli ({version})"))
-        else:
-            msg = "Not authenticated. Run: claude login"
-            print(_preflight_fail("claude cli auth", msg))
-            errors.append(msg)
+        msg = "No auth configured. Either:\n      • Install Claude CLI and run: claude login\n      • Set ANTHROPIC_API_KEY environment variable"
+        print(_preflight_fail("auth", msg))
+        errors.append(msg)
 
-    # Playwright MCP
+    # MCP: search project-level and global configs
     mcp_tool = CONFIG["mcp_tool"]
-    claude_config_paths = [
-        os.path.expanduser("~/.claude.json"),
-        os.path.expanduser("~/.claude/settings.json"),
-    ]
-    mcp_found = False
-    for path in claude_config_paths:
-        try:
-            with open(path) as f:
-                import json
-                config = json.load(f)
-            mcp_servers = config.get("mcpServers", {})
-            if mcp_tool in mcp_servers:
-                mcp_found = True
-                break
-        except (FileNotFoundError, json.JSONDecodeError):
-            continue
-
-    if mcp_found:
-        print(_preflight_ok(f"MCP: {mcp_tool}"))
+    harness_root = get_harness_root()
+    mcp_path = _find_mcp_server(mcp_tool, harness_root)
+    if mcp_path:
+        rel = os.path.relpath(mcp_path, harness_root) if mcp_path.startswith(harness_root) else mcp_path
+        print(_preflight_ok(f"MCP: {mcp_tool} ({rel})"))
     else:
-        msg = f"Not configured. Add '{mcp_tool}' to ~/.claude.json mcpServers."
+        msg = (
+            f"'{mcp_tool}' not found in any config. Add to one of:\n"
+            f"      • .mcp.json (project-level, recommended)\n"
+            f"      • .claude/settings.json (project-level)\n"
+            f"      • ~/.claude.json (global)\n"
+            f"      • ~/.claude/settings.json (global)"
+        )
         print(_preflight_fail(f"MCP: {mcp_tool}", msg))
         errors.append(msg)
 
