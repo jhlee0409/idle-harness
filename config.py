@@ -15,9 +15,9 @@ CONFIG = {
     # --- Agent timeouts (seconds, 0 = no limit) ---
     "agent_timeout_planner": 600,       # 10 min
     "agent_timeout_negotiate": 300,     # 5 min per round
-    "agent_timeout_build": 1800,        # 30 min
-    "agent_timeout_eval": 1800,         # 30 min
-    "agent_timeout_integration": 1800,  # 30 min
+    "agent_timeout_build": 2700,        # 45 min — covers complex sprints (observed max 14m, article implies up to 40m)
+    "agent_timeout_eval": 2700,         # 45 min — thorough Playwright testing can take 20-35m
+    "agent_timeout_integration": 2700,  # 45 min
 
     # --- Dev server ---
     "dev_server_start_cmd": None,
