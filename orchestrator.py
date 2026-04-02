@@ -184,10 +184,11 @@ class Orchestrator:
         review_path = os.path.join(sprint_dir, "contract_review.md")
         contract_path = os.path.join(sprint_dir, "sprint_contract.md")
 
-        _log("Contract", f"Sprint {sprint.number}: Negotiating...")
+        max_rounds = CONFIG["max_negotiation_rounds"]
+        _log("Contract", f"Sprint {sprint.number}: Negotiating (max {max_rounds} rounds)...")
         start = time.time()
 
-        for round_num in range(CONFIG["max_negotiation_rounds"]):
+        for round_num in range(max_rounds):
             review_context = _read_file_optional(review_path)
             if review_context:
                 review_context = f"\n\nEvaluator's review of your previous proposal:\n{review_context}"
@@ -201,6 +202,7 @@ class Orchestrator:
                 f"Write your contract proposal to {proposal_path} using the Write tool. "
                 f"Use the Contract Proposal Mode described in your instructions."
             )
+            _log("Contract", f"Sprint {sprint.number}: Round {round_num + 1}/{max_rounds} — Generator proposing...")
             gen_result = await call_agent(
                 system_prompt=self.generator_prompt,
                 user_prompt=gen_prompt,
@@ -218,6 +220,7 @@ class Orchestrator:
                 f"Use the Contract Review Mode described in your instructions. "
                 f"If the criteria are complete and testable, write '{CONTRACT_AGREED}' at the top."
             )
+            _log("Contract", f"Sprint {sprint.number}: Round {round_num + 1}/{max_rounds} — Evaluator reviewing...")
             eval_result = await call_agent(
                 system_prompt=self.evaluator_prompt,
                 user_prompt=eval_prompt,
@@ -394,14 +397,23 @@ class Orchestrator:
         self._print_report(total_start)
 
     async def _run_full(self):
+        run_start = time.time()
         for sprint in self.sprints:
             self.state.set_sprint_info(current=sprint.number, total=len(self.sprints))
+            elapsed_total = _elapsed(run_start)
             print(f"\n{_C.BOLD}{'─' * 60}")
-            _log("Harness", f"Sprint {sprint.number}/{len(self.sprints)}: {sprint.name}")
+            _log("Harness", f"Sprint {sprint.number}/{len(self.sprints)}: {sprint.name} (elapsed: {elapsed_total})")
             print(f"{'─' * 60}{_C.RESET}")
 
+            sprint_start = time.time()
             contract_path = await self.negotiate_contract(sprint)
             passed = await self._retry_build_eval(sprint, contract_path, f"Sprint {sprint.number}")
+
+            # Sprint summary
+            sprint_time = _elapsed(sprint_start)
+            attempts = self.state.get_sprint_attempt(sprint.number, "build")
+            icon = f"{_C.GREEN}PASS{_C.RESET}" if passed else f"{_C.RED}FAIL{_C.RESET}"
+            _log("Harness", f"Sprint {sprint.number} complete: {icon} ({attempts} attempt(s), {sprint_time})")
 
             if not passed:
                 _log("Harness", f"Sprint {sprint.number} incomplete — continuing to next sprint.")
@@ -486,15 +498,36 @@ class Orchestrator:
         print(f"  Eval attempts:  {self.state.total('eval', status)}")
 
         sprint_results = self.state.get_sprint_results(status)
+        timings = status.get("timings", {})
+        sprint_timings = {st["sprint"]: st for st in timings.get("sprints", [])}
+
+        # Planning
+        if timings.get("plan"):
+            print(f"  Planning:       {_elapsed_secs(timings['plan'])}")
+
+        # Per-sprint: result + timing combined
         for num in sorted(sprint_results):
             passed = sprint_results[num]
             color = _C.GREEN if passed else _C.RED
             icon = f"{color}{_C.BOLD}{'PASS' if passed else 'FAIL'}{_C.RESET}"
             if num == 0:
-                print(f"  Integration:    {icon}")
+                label = "Integration"
             else:
-                print(f"  Sprint {num}:       {icon}")
+                label = f"Sprint {num}"
 
+            st = sprint_timings.get(num, {})
+            parts = []
+            if "negotiate" in st:
+                parts.append(f"negotiate {_elapsed_secs(st['negotiate'])}")
+            if "build" in st:
+                parts.append(f"build {' + '.join(_elapsed_secs(b) for b in st['build'])}")
+            if "eval" in st:
+                parts.append(f"eval {' + '.join(_elapsed_secs(e) for e in st['eval'])}")
+            timing_str = f" ({', '.join(parts)})" if parts else ""
+
+            print(f"  {label:14s} {icon}{timing_str}")
+
+        # Cost
         cost = status.get("cost", {})
         total_usd = cost.get("total_usd", 0)
         if total_usd > 0:
@@ -507,20 +540,7 @@ class Orchestrator:
             for phase, pcost in sorted(by_phase.items()):
                 pi = pcost.get("input_tokens", 0)
                 po = pcost.get("output_tokens", 0)
-                print(f"    {phase:12s}  {pi:,} in / {po:,} out")
-
-        timings = status.get("timings", {})
-        if timings.get("plan"):
-            print(f"  Planning:       {_elapsed_secs(timings['plan'])}")
-        for st in timings.get("sprints", []):
-            parts = []
-            if "negotiate" in st:
-                parts.append(f"negotiate: {_elapsed_secs(st['negotiate'])}")
-            if "build" in st:
-                parts.append(f"build: {' + '.join(_elapsed_secs(b) for b in st['build'])}")
-            if "eval" in st:
-                parts.append(f"eval: {' + '.join(_elapsed_secs(e) for e in st['eval'])}")
-            print(f"  Sprint {st['sprint']}:      {', '.join(parts)}")
+                print(f"    {phase:16s} {pi:,} in / {po:,} out")
 
         print(f"  Total time:     {_elapsed(total_start)}")
         print("=" * 60)
