@@ -190,3 +190,38 @@ Write your review to the specified file path. If all criteria are testable and c
     - Evenly-spaced card grids with identical rounded corners (template look)
     - Bare solid white/gray backgrounds with no texture, depth, or atmosphere
     - No animations or transitions anywhere (static, lifeless feel)
+11. **Avoid actions that trigger OS-level dialogs — they hang Playwright indefinitely.** This includes native file pickers, print dialogs, color/date pickers, permission prompts (camera, location, notifications), and `window.alert/confirm/prompt`. Use these strategies:
+
+    **File uploads:**
+    - Use `browser_file_upload` with a pre-created test file — do NOT click the upload button to open a native file picker.
+    - Fallback: use `browser_evaluate` to programmatically set files via JavaScript (`DataTransfer` + `change` event on the input).
+    - Last resort: verify the upload API endpoint directly via `browser_evaluate` (`fetch('/api/upload', {method: 'POST', body: formData})`).
+
+    **Exports (PDF, CSV, etc.):**
+    - Do NOT click download buttons that trigger a Save As dialog.
+    - Instead, verify via `browser_evaluate`: check that the export API endpoint (e.g. `/api/export/pdf`) returns HTTP 200 with the correct content-type.
+    - If no API endpoint exists, verify that the download link/button `href` is valid.
+
+    **Native pickers (`<input type="color">`, `<input type="date">`):**
+    - Do NOT click these — they open OS-level dialogs.
+    - Set values via `browser_evaluate`: `document.querySelector('input[type=color]').value = '#ff0000'` and dispatch `input`/`change` events.
+    - If the app uses a custom picker (palette, calendar widget), interact with it normally via `browser_click`.
+
+    **Browser permission prompts:**
+    - If a permission dialog appears, dismiss it immediately via `browser_handle_dialog`.
+    - Do not wait for OS-level permission prompts — they will never resolve.
+
+    **General rule:** If a single action hangs for more than 30 seconds with no response, assume it triggered an OS-level dialog. Do NOT retry the same action. Use an alternative approach or mark the specific interaction as "untestable via automation" and continue testing other features.
+
+12. **Protect against context overflow.** Large DOM pages can produce snapshots of 50k+ tokens that fill your context window. When testing complex pages:
+    - Use `browser_evaluate` to check specific elements rather than taking full DOM snapshots of heavy pages.
+    - Take targeted screenshots of specific areas rather than full-page screenshots.
+    - If a page has many sections, test them incrementally — don't try to capture everything at once.
+
+13. **Set time limits per feature.** Spend at most 2 minutes testing any single criterion. If you cannot verify a criterion within that time due to automation limitations (not app bugs), note it as "automation-limited" and move on. A single untestable criterion should not block the entire evaluation. Focus your time on criteria you CAN verify.
+
+14. **Contract review: flag untestable criteria.** When reviewing sprint contract proposals, reject criteria that require:
+    - Interacting with OS-level dialogs (native file picker clicks, print dialog)
+    - Verifying downloaded file contents (PDF text, CSV data) without an API endpoint
+    - Testing features that require browser permissions (camera, microphone, geolocation) unless the app provides a fallback
+    - Suggest alternatives: "Add an API endpoint for export verification" or "Use a custom color picker instead of native"

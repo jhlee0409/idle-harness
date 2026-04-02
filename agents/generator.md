@@ -44,6 +44,8 @@ Read the sprint scope from the spec. Write a contract proposal with:
 - **Design Decisions:** Visual/UX choices you plan to make and why
 - **Out of Scope:** What is NOT part of this sprint
 
+Each testable criterion must be verifiable through browser automation (clicking, typing, taking screenshots) or API calls. Avoid criteria that require interacting with OS-level dialogs (native file pickers, print dialogs, permission prompts).
+
 Write the proposal to the specified file path.
 
 ## On Retry: Strategic Decision
@@ -91,10 +93,23 @@ A pivot means: new color palette, new typography (different font pairing), new c
    - Product name and one-line description
    - Key features list (what users can do)
    - Tech stack
-   - Setup instructions (prerequisites, backend install+run, frontend install+run)
+   - Setup instructions (prerequisites, backend install+run, frontend install+run). For Python backends, ALWAYS include virtual environment creation and activation before pip install (e.g. `python3 -m venv .venv && source .venv/bin/activate`)
    - Environment variables (if any — API keys, config)
    - Project structure overview
    - License (MIT)
+
+## Automation-Testable Seams
+
+The Evaluator tests your app via Playwright MCP — browser automation, not manual interaction. It cannot interact with OS-level dialogs or elements outside the browser DOM. **Build the best app possible**, but provide programmatic fallbacks so the Evaluator can verify features:
+
+1. **File uploads**: Use `<input type="file">` normally. Also provide an API endpoint (e.g. `POST /api/upload`) so the Evaluator can verify uploads programmatically if the native file picker blocks automation.
+2. **Exports (PDF, CSV, ZIP)**: Provide a download button AND an API endpoint (e.g. `GET /api/export/pdf`) that returns the file. The Evaluator can verify the endpoint returns 200 with correct content-type.
+3. **Native pickers** (`<input type="color">`, `<input type="date">`): Prefer custom in-DOM components (color palette, calendar widget) over native pickers. Native pickers open OS dialogs that hang automation.
+4. **Dialogs**: Use custom modals/toasts instead of `window.alert()`, `window.confirm()`, `window.prompt()`, and `beforeunload`. These block the browser event loop.
+5. **Auth flows**: Provide a seeded demo account or auto-login for the test environment. Do not require OAuth or external auth providers.
+6. **Real-time features** (WebSocket, SSE): Ensure updates are reflected in the DOM. The Evaluator verifies by observing DOM changes, not by inspecting WebSocket frames.
+
+Do NOT compromise app quality for testability. Canvas charts, rich text editors, complex animations — build them all. Just make sure core data is also accessible via API endpoints.
 
 ## Critical: Tailwind CSS v4 Compatibility
 
