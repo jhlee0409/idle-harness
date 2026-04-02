@@ -241,10 +241,12 @@ class Orchestrator:
             if agreed:
                 shutil.copy(proposal_path, contract_path)
                 _log("Contract", f"Sprint {sprint.number}: Agreed in round {round_num + 1}. ({_elapsed(start)})")
+                _print_contract_summary(contract_path)
                 break
         else:
             shutil.copy(proposal_path, contract_path)
             _log("Contract", f"Sprint {sprint.number}: No agreement — using last proposal. ({_elapsed(start)})")
+            _print_contract_summary(contract_path)
 
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "negotiate", elapsed)
@@ -585,6 +587,58 @@ class Orchestrator:
             print(f"\n    # Or use the serve command:")
             print(f"    python orchestrator.py serve")
             print()
+
+
+def _print_contract_summary(contract_path: str):
+    """Print a brief summary of the agreed sprint contract."""
+    text = _read_file_optional(contract_path)
+    if not text:
+        return
+
+    # Extract scope line
+    scope = ""
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.lower().startswith("**scope") or stripped.lower().startswith("scope"):
+            scope = re.sub(r"^\*{0,2}scope\*{0,2}[:\s]*", "", stripped, flags=re.IGNORECASE).strip()
+            break
+
+    # Count criteria (lines starting with a number or dash-bracket pattern)
+    criteria_count = 0
+    in_criteria = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if "testable criteria" in stripped.lower() or "criteria" in stripped.lower() and "##" in stripped:
+            in_criteria = True
+            continue
+        if in_criteria and stripped.startswith("#"):
+            in_criteria = False
+        if in_criteria and stripped and (stripped[0].isdigit() or stripped.startswith("- [")):
+            criteria_count += 1
+
+    # Extract design decisions (first line only)
+    design = ""
+    in_design = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if "design decision" in stripped.lower():
+            in_design = True
+            continue
+        if in_design and stripped.startswith("#"):
+            break
+        if in_design and stripped and not design:
+            design = re.sub(r"^[-*]\s*", "", stripped)[:80]
+
+    parts = []
+    if scope:
+        parts.append(f"Scope: {scope[:80]}")
+    if criteria_count:
+        parts.append(f"Criteria: {criteria_count} testable items")
+    if design:
+        parts.append(f"Design: {design}")
+
+    for part in parts:
+        print(f"    {_C.DIM}{part}{_C.RESET}")
 
 
 def _print_required_changes(text: str):
