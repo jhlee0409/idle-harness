@@ -612,22 +612,54 @@ def _elapsed_secs(secs: int) -> str:
     return f"{hours}h {mins}m {secs}s"
 
 
-def _preflight_ok(name: str) -> str:
+def _ok(name: str) -> str:
     return f"  {_C.GREEN}✓{_C.RESET} {name}"
 
 
-def _preflight_fail(name: str, hint: str) -> str:
+def _fail(name: str, hint: str) -> str:
     return f"  {_C.RED}✗{_C.RESET} {name} — {hint}"
 
 
+def _is_ci() -> bool:
+    return os.environ.get("CI", "").lower() in ("1", "true", "yes")
+
+
+def _prompt_yn(question: str, default: bool = True) -> bool:
+    if _is_ci():
+        return False
+    hint = "[Y/n]" if default else "[y/N]"
+    try:
+        answer = input(f"  {question} {hint}: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return default
+    if not answer:
+        return default
+    return answer.startswith("y")
+
+
+def _prompt_choice(question: str, options: list[tuple[str, str]]) -> str:
+    """Prompt user to pick from options. Returns the key."""
+    if _is_ci():
+        return options[0][0]
+    for key, label in options:
+        print(f"    [{key}] {label}")
+    try:
+        answer = input(f"  {question}: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return options[0][0]
+    for key, _ in options:
+        if answer.startswith(key):
+            return key
+    return options[0][0]
+
+
+# --- Dependency checks ---
+
 def _find_mcp_server(mcp_tool: str, harness_root: str) -> str | None:
-    """Search for MCP server config in project-level and global settings. Returns the path found."""
     import json
     search_paths = [
-        # Project-level (highest priority)
         os.path.join(harness_root, ".mcp.json"),
         os.path.join(harness_root, ".claude", "settings.json"),
-        # Global
         os.path.expanduser("~/.claude.json"),
         os.path.expanduser("~/.claude/settings.json"),
     ]
@@ -644,16 +676,12 @@ def _find_mcp_server(mcp_tool: str, harness_root: str) -> str | None:
 
 
 def _check_auth_mode() -> tuple[str, str]:
-    """Detect authentication mode. Returns (mode, detail)."""
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if api_key:
         masked = api_key[:8] + "..." + api_key[-4:] if len(api_key) > 12 else "***"
         return "api", masked
 
-    # Check OAuth via Claude CLI
-    result = subprocess.run(
-        ["claude", "--version"], capture_output=True, text=True,
-    )
+    result = subprocess.run(["claude", "--version"], capture_output=True, text=True)
     if result.returncode != 0:
         return "none", ""
 
@@ -667,83 +695,224 @@ def _check_auth_mode() -> tuple[str, str]:
             return "oauth", version
     except subprocess.TimeoutExpired:
         pass
-
     return "cli_no_auth", version
 
 
-def _preflight():
-    """Check all required dependencies before running."""
-    print(f"{_C.BOLD}Preflight checks{_C.RESET}")
-    errors = []
+# --- Fix actions ---
 
-    # Python package
+def _fix_pip():
+    print(f"  {_C.DIM}→ Installing claude-agent-sdk...{_C.RESET}")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "claude-agent-sdk"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        print(_ok("claude_agent_sdk installed"))
+        return True
+    print(_fail("pip install", result.stderr.strip().split("\n")[-1]))
+    return False
+
+
+def _fix_auth() -> bool:
+    choice = _prompt_choice("Choose auth method", [
+        ("o", "OAuth login (uses subscription quota)"),
+        ("a", "API key (pay per use, no quota limit)"),
+    ])
+    if choice == "o":
+        print(f"  {_C.DIM}→ Running: claude login{_C.RESET}")
+        result = subprocess.run(["claude", "login"], text=True)
+        if result.returncode == 0:
+            print(_ok("OAuth authenticated"))
+            return True
+        print(_fail("claude login", "Login failed. Try again manually: claude login"))
+        return False
+    else:
+        try:
+            key = input("  Enter ANTHROPIC_API_KEY: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if not key:
+            return False
+        # Validate key format
+        if not key.startswith("sk-ant-"):
+            print(_fail("API key", "Invalid format. Key should start with sk-ant-"))
+            return False
+        # Write to shell profile for persistence
+        shell = os.environ.get("SHELL", "/bin/bash")
+        profile = os.path.expanduser("~/.zshrc" if "zsh" in shell else "~/.bashrc")
+        export_line = f'export ANTHROPIC_API_KEY="{key}"'
+
+        # Set in current process
+        os.environ["ANTHROPIC_API_KEY"] = key
+
+        if _prompt_yn(f"Add to {profile} for persistence?"):
+            with open(profile, "a") as f:
+                f.write(f"\n# Added by Idle Harness setup\n{export_line}\n")
+            print(_ok(f"API key saved to {profile}"))
+        else:
+            print(_ok("API key set for this session only"))
+        return True
+
+
+def _fix_mcp(mcp_tool: str, harness_root: str) -> bool:
+    import json
+
+    # Check if npx is available (needed for MCP server)
+    npx_check = subprocess.run(["which", "npx"], capture_output=True, text=True)
+    if npx_check.returncode != 0:
+        print(_fail("npx", "npx not found. Install Node.js first."))
+        return False
+
+    mcp_json_path = os.path.join(harness_root, ".mcp.json")
+    print(f"  {_C.DIM}→ Configuring {mcp_tool} MCP in .mcp.json{_C.RESET}")
+
+    # Build the MCP config
+    mcp_config = {}
+    try:
+        with open(mcp_json_path) as f:
+            mcp_config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    servers = mcp_config.setdefault("mcpServers", {})
+    servers[mcp_tool] = {
+        "command": "npx",
+        "args": ["@anthropic-ai/mcp-server-playwright"],
+    }
+
+    with open(mcp_json_path, "w") as f:
+        json.dump(mcp_config, f, indent=2)
+
+    print(_ok(f"MCP: {mcp_tool} configured in .mcp.json"))
+    return True
+
+
+# --- Main preflight ---
+
+def _preflight(force_setup: bool = False):
+    """Check dependencies. In interactive mode, offer to fix issues automatically."""
+    is_ci = _is_ci()
+    print(f"{_C.BOLD}Preflight checks{_C.RESET}")
+    issues = []  # list of (name, hint, fix_fn)
+
+    # 1. Python package
     try:
         import claude_agent_sdk  # noqa: F401
-        print(_preflight_ok("claude_agent_sdk"))
+        print(_ok("claude_agent_sdk"))
     except ImportError:
-        msg = "Not installed. Run: pip install claude-agent-sdk"
-        print(_preflight_fail("claude_agent_sdk", msg))
-        errors.append(msg)
+        hint = "Not installed"
+        print(_fail("claude_agent_sdk", hint))
+        issues.append(("claude_agent_sdk", hint, _fix_pip))
 
-    # CLI tools
+    # 2. CLI tools (can't auto-install, just detect)
     for cmd, install_hint in [
         ("node", "Install Node.js 18+: https://nodejs.org"),
         ("npm", "Install Node.js 18+: https://nodejs.org"),
         ("git", "Install git: https://git-scm.com"),
     ]:
-        result = subprocess.run(
-            ["which", cmd], capture_output=True, text=True,
-        )
+        result = subprocess.run(["which", cmd], capture_output=True, text=True)
         if result.returncode == 0:
-            print(_preflight_ok(cmd))
+            # Get version
+            ver = subprocess.run([cmd, "--version"], capture_output=True, text=True)
+            ver_str = ver.stdout.strip().split("\n")[0] if ver.returncode == 0 else ""
+            print(_ok(f"{cmd} ({ver_str})" if ver_str else cmd))
         else:
-            print(_preflight_fail(cmd, install_hint))
-            errors.append(f"'{cmd}' not found. {install_hint}")
+            print(_fail(cmd, install_hint))
+            issues.append((cmd, install_hint, None))  # None = can't auto-fix
 
-    # Auth: OAuth or API key
+    # 3. Claude CLI existence
+    cli_result = subprocess.run(["which", "claude"], capture_output=True, text=True)
+    has_cli = cli_result.returncode == 0
+    if not has_cli:
+        hint = "Not found. Install: https://docs.anthropic.com/en/docs/claude-code"
+        print(_fail("claude cli", hint))
+        issues.append(("claude cli", hint, None))
+
+    # 4. Auth: OAuth or API key
     auth_mode, auth_detail = _check_auth_mode()
     if auth_mode == "api":
-        print(_preflight_ok(f"auth: API key ({auth_detail})"))
+        print(_ok(f"auth: API key ({auth_detail})"))
     elif auth_mode == "oauth":
-        print(_preflight_ok(f"auth: OAuth via Claude CLI ({auth_detail})"))
+        print(_ok(f"auth: OAuth ({auth_detail})"))
     elif auth_mode == "cli_no_auth":
-        msg = "Claude CLI found but not authenticated. Run: claude login  OR  set ANTHROPIC_API_KEY"
-        print(_preflight_fail("auth", msg))
-        errors.append(msg)
+        hint = "Claude CLI found but not authenticated"
+        print(_fail("auth", hint))
+        issues.append(("auth", hint, _fix_auth if has_cli else None))
     else:
-        msg = "No auth configured. Either:\n      • Install Claude CLI and run: claude login\n      • Set ANTHROPIC_API_KEY environment variable"
-        print(_preflight_fail("auth", msg))
-        errors.append(msg)
+        hint = "No auth configured"
+        print(_fail("auth", hint))
+        issues.append(("auth", hint, _fix_auth if has_cli else None))
 
-    # MCP: search project-level and global configs
+    # 5. MCP server
     mcp_tool = CONFIG["mcp_tool"]
     harness_root = get_harness_root()
     mcp_path = _find_mcp_server(mcp_tool, harness_root)
     if mcp_path:
         rel = os.path.relpath(mcp_path, harness_root) if mcp_path.startswith(harness_root) else mcp_path
-        print(_preflight_ok(f"MCP: {mcp_tool} ({rel})"))
+        print(_ok(f"MCP: {mcp_tool} ({rel})"))
     else:
-        msg = (
-            f"'{mcp_tool}' not found in any config. Add to one of:\n"
-            f"      • .mcp.json (project-level, recommended)\n"
-            f"      • .claude/settings.json (project-level)\n"
-            f"      • ~/.claude.json (global)\n"
-            f"      • ~/.claude/settings.json (global)"
-        )
-        print(_preflight_fail(f"MCP: {mcp_tool}", msg))
-        errors.append(msg)
+        hint = f"'{mcp_tool}' not configured"
+        print(_fail(f"MCP: {mcp_tool}", hint))
+        issues.append((f"MCP: {mcp_tool}", hint, lambda: _fix_mcp(mcp_tool, harness_root)))
 
-    if errors:
-        print(f"\n{_C.RED}{_C.BOLD}Preflight failed — {len(errors)} error(s){_C.RESET}")
+    # All good
+    if not issues:
+        print(f"\n{_C.GREEN}{_C.BOLD}All checks passed{_C.RESET}\n")
+        return
+
+    # CI mode: fail hard
+    if is_ci:
+        print(f"\n{_C.RED}{_C.BOLD}Preflight failed — {len(issues)} error(s){_C.RESET}")
         sys.exit(1)
-    else:
-        print(f"{_C.GREEN}{_C.BOLD}All checks passed{_C.RESET}\n")
+
+    # Interactive: offer to fix
+    fixable = [(name, hint, fix) for name, hint, fix in issues if fix is not None]
+    unfixable = [(name, hint) for name, hint, fix in issues if fix is None]
+
+    if unfixable:
+        print(f"\n  {_C.YELLOW}Manual steps required:{_C.RESET}")
+        for name, hint in unfixable:
+            print(f"    • {name}: {hint}")
+
+    if fixable:
+        if force_setup or _prompt_yn(f"\n  Fix {len(fixable)} issue(s) automatically?"):
+            print()
+            remaining_errors = []
+            for name, hint, fix_fn in fixable:
+                if not fix_fn():
+                    remaining_errors.append(name)
+            if remaining_errors:
+                print(f"\n{_C.RED}{_C.BOLD}Could not fix: {', '.join(remaining_errors)}{_C.RESET}")
+                sys.exit(1)
+            if unfixable:
+                print(f"\n{_C.YELLOW}Fix the manual steps above, then re-run.{_C.RESET}")
+                sys.exit(1)
+            print(f"\n{_C.GREEN}{_C.BOLD}All issues fixed{_C.RESET}\n")
+            return
+        else:
+            print(f"\n{_C.RED}{_C.BOLD}Preflight failed — fix issues and re-run{_C.RESET}")
+            sys.exit(1)
+
+    # Only unfixable issues remain
+    print(f"\n{_C.RED}{_C.BOLD}Preflight failed — fix the above issues and re-run{_C.RESET}")
+    sys.exit(1)
 
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "--setup":
+        _preflight(force_setup=True)
+        print("Setup complete. Run:")
+        print(f"  python orchestrator.py \"your app idea\"")
+        return
+
     if len(sys.argv) < 2:
-        print("Usage: python orchestrator.py \"<your product idea>\"")
-        sys.exit(1)
+        print(f"{_C.BOLD}Idle Harness{_C.RESET} — GAN-inspired multi-agent app builder\n")
+        print("Usage:")
+        print(f"  python orchestrator.py \"your app idea\"    Build an app")
+        print(f"  python orchestrator.py --setup             Interactive setup")
+        print(f"\nEnvironment:")
+        print(f"  CI=1                                       Non-interactive mode")
+        sys.exit(0)
 
     _preflight()
 
