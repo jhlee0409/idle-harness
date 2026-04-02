@@ -123,6 +123,8 @@ class Orchestrator:
             ["git", "init"], cwd=self.output_dir, capture_output=True
         )
         self.server = _make_server(self.comms_dir, self.output_dir)
+        # Start project-level log file
+        _log_init(os.path.join(self.output_dir, "harness.log"))
         _log("Harness", f"Project directory: output/{slug}/")
 
     def _sprint_dir(self, sprint: Sprint) -> str:
@@ -395,6 +397,8 @@ class Orchestrator:
 
         self.state.set_phase("completed")
         self._print_report(total_start)
+        self._archive_comms()
+        _log_close()
 
     async def _run_full(self):
         run_start = time.time()
@@ -473,6 +477,16 @@ class Orchestrator:
 
         self.state.set_sprint_result(0, False)
         _log("Harness", f"Integration eval failed after {max_attempts} attempts.")
+
+    def _archive_comms(self):
+        """Copy comms/ artifacts into output/{slug}/.harness/ for project-level persistence."""
+        if not self.output_dir:
+            return
+        archive_dir = os.path.join(self.output_dir, ".harness")
+        if os.path.isdir(archive_dir):
+            shutil.rmtree(archive_dir)
+        shutil.copytree(self.comms_dir, archive_dir)
+        _log("Harness", f"Build artifacts archived to {os.path.relpath(archive_dir)}")
 
     async def _run_simple(self):
         single_sprint = Sprint(number=1, name="Full Build")
@@ -649,9 +663,30 @@ def _ask_user_continue(label: str):
     _log("Harness", "User chose to continue.")
 
 
+_log_file = None
+
+
+def _log_init(path: str):
+    global _log_file
+    _log_file = open(path, "a")
+
+
+def _log_close():
+    global _log_file
+    if _log_file:
+        _log_file.close()
+        _log_file = None
+
+
 def _log(agent: str, msg: str):
     color = _AGENT_COLORS.get(agent, "")
     print(f"{color}{_C.BOLD}[{agent}]{_C.RESET} {msg}")
+    if _log_file:
+        ts = time.strftime("%H:%M:%S")
+        # Strip ANSI codes for file output
+        clean = re.sub(r"\033\[[0-9;]*m", "", msg)
+        _log_file.write(f"[{ts}] [{agent}] {clean}\n")
+        _log_file.flush()
 
 
 def _elapsed(start: float) -> str:
