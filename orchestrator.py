@@ -58,7 +58,7 @@ class Orchestrator:
         self._evaluator_prompt = None
 
         # Continuous session: Generator keeps context across build attempts
-        self._generator_conversation_id: str | None = None
+        self._generator_session_id: str | None = None
 
         self.state = HarnessState(self.comms_dir)
         self.server = None
@@ -272,15 +272,15 @@ class Orchestrator:
                 allowed_tools=TOOLS_FULL,
                 cwd=self.output_dir,
                 max_turns=CONFIG["generator_max_turns"],
-                resume=self._generator_conversation_id,
+                resume=self._generator_session_id,
             )
         except AgentError:
             # Reset conversation — crashed session can't be resumed
-            self._generator_conversation_id = None
+            self._generator_session_id = None
             raise
         # Maintain continuous session across build attempts (per article recommendation)
-        if agent_result.conversation_id:
-            self._generator_conversation_id = agent_result.conversation_id
+        if agent_result.session_id:
+            self._generator_session_id = agent_result.session_id
         self._track_cost(agent_result, "build")
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "build", elapsed)

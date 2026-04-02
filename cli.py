@@ -17,7 +17,7 @@ class AgentResult:
     input_tokens: int = 0
     output_tokens: int = 0
     turns: int = 0
-    conversation_id: str = ""
+    session_id: str = ""
     cost_usd: float = 0.0
     duration_ms: int = 0
 
@@ -99,7 +99,7 @@ async def call_agent(
     result_text = ""
     input_tokens = 0
     output_tokens = 0
-    conversation_id = ""
+    session_id = ""
     cost_usd = 0.0
     duration_ms = 0
     start = time.time()
@@ -121,6 +121,11 @@ async def call_agent(
     ticker_task = asyncio.create_task(_ticker())
     try:
         async for message in query(prompt=user_prompt, options=options):
+            # Capture session_id from init message (per SDK docs)
+            if hasattr(message, "subtype") and getattr(message, "subtype", "") == "init":
+                sid = getattr(message, "session_id", "")
+                if sid:
+                    session_id = sid
             if isinstance(message, AssistantMessage):
                 turn_count += 1
                 usage = getattr(message, "usage", None)
@@ -130,7 +135,9 @@ async def call_agent(
                 _print_status()
             if isinstance(message, ResultMessage):
                 result_text = message.result
-                conversation_id = getattr(message, "conversation_id", "") or ""
+                # Fallback: some SDK versions put session info on ResultMessage
+                if not session_id:
+                    session_id = getattr(message, "session_id", "") or getattr(message, "conversation_id", "") or ""
                 # Extract final usage/cost from ResultMessage
                 cost_usd = getattr(message, "total_cost_usd", 0.0) or 0.0
                 duration_ms = getattr(message, "duration_ms", 0) or 0
@@ -183,7 +190,7 @@ async def call_agent(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         turns=turn_count,
-        conversation_id=conversation_id,
+        session_id=session_id,
         cost_usd=cost_usd,
         duration_ms=duration_ms,
     )
