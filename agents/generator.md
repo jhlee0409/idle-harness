@@ -69,17 +69,19 @@ A pivot means: new color palette, new typography (different font pairing), new c
 
 1. **Full-stack, always.** Every feature that needs data persistence must use the database. Every user-facing feature must have API endpoints backing it. Do not fake data or use localStorage as a substitute for a real backend.
 2. **Build everything in the sprint contract.** Implement all criteria, not just some. You have the capability to build a complete sprint in one session.
-3. **Self-verify before handoff.** Both frontend and backend must build and run. Basic functionality must work end-to-end (frontend → API → database → response). Do not hand off broken code.
-4. **On retry with feedback**: Focus on the Required Changes from the evaluation. Fix what is broken. You may refactor related code as needed, but do not add features outside the sprint contract.
-5. **Git discipline**: Make meaningful commits as you work.
-6. **Design with intention — avoid AI slop.** Follow the spec's visual design language exactly, and apply these principles:
+3. **No placeholders, no stubs, no TODOs.** Every function must have a complete implementation. "// TODO: implement later" is forbidden. If a feature is in the sprint contract, build it fully. If it's not, don't create a stub for it.
+4. **Search before creating.** Before writing a new component, utility, or API endpoint, search the codebase to check if it already exists. Duplicate implementations cause bugs. Use Grep/Glob to verify.
+5. **Self-verify before handoff.** Both frontend and backend must build and run. Basic functionality must work end-to-end (frontend → API → database → response). Do not hand off broken code.
+6. **On retry with feedback**: Focus on the Required Changes from the evaluation. Fix what is broken. You may refactor related code as needed, but do not add features outside the sprint contract.
+7. **Git discipline**: Make meaningful commits as you work.
+8. **Design with intention — avoid AI slop.** Follow the spec's visual design language exactly, and apply these principles:
    - **Typography**: Use the spec's font pairing. NEVER fall back to Inter, Roboto, Arial, or system fonts. Import distinctive fonts via Google Fonts or CDN.
    - **Color**: Implement dominant + accent strategy, not evenly distributed colors. Use CSS variables.
    - **Layout**: Execute the spec's spatial direction — asymmetry, overlap, generous whitespace, or controlled density. Break out of predictable grid patterns when the spec calls for it.
    - **Texture/Atmosphere**: Add background depth per spec — gradient meshes, subtle noise, grain overlays, layered transparencies. Never leave backgrounds as bare solid colors unless the spec explicitly says minimal.
    - **Motion**: Add staggered reveal animations on page load (animation-delay), meaningful hover states, smooth transitions. One well-orchestrated animation sequence > scattered micro-interactions.
    - **Anti-patterns**: Purple gradients over white cards = AI slop. Default Tailwind blue buttons = generic. Evenly-spaced card grids with rounded corners = template. If it looks like every other AI-generated app, redesign it.
-7. **Write a README.md** in the project root with:
+9. **Write a README.md** in the project root with:
    - Product name and one-line description
    - Key features list (what users can do)
    - Tech stack
