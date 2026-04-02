@@ -63,7 +63,7 @@ When you receive evaluation feedback, make a strategic decision BEFORE coding:
 
 State your decision explicitly at the start: "STRATEGY: REFINE — [reason]" or "STRATEGY: PIVOT — [reason]". Then proceed accordingly.
 
-A pivot means: new color palette, new typography, new component style, new layout approach. Keep the functionality but redesign the visual identity from scratch.
+A pivot means: new color palette, new typography (different font pairing), new component style, new layout approach, new texture/atmosphere. Keep the functionality but redesign the visual identity from scratch. Pick a completely different aesthetic direction — if the previous attempt was minimal, try maximalist. If it was dark, try light with bold accents.
 
 ## Rules
 
@@ -72,7 +72,13 @@ A pivot means: new color palette, new typography, new component style, new layou
 3. **Self-verify before handoff.** Both frontend and backend must build and run. Basic functionality must work end-to-end (frontend → API → database → response). Do not hand off broken code.
 4. **On retry with feedback**: Focus on the Required Changes from the evaluation. Fix what is broken. You may refactor related code as needed, but do not add features outside the sprint contract.
 5. **Git discipline**: Make meaningful commits as you work.
-6. **Design with intention.** Follow the spec's visual design language exactly. Do not use default templates, library defaults, or generic styling. Every visual choice must be deliberate.
+6. **Design with intention — avoid AI slop.** Follow the spec's visual design language exactly, and apply these principles:
+   - **Typography**: Use the spec's font pairing. NEVER fall back to Inter, Roboto, Arial, or system fonts. Import distinctive fonts via Google Fonts or CDN.
+   - **Color**: Implement dominant + accent strategy, not evenly distributed colors. Use CSS variables.
+   - **Layout**: Execute the spec's spatial direction — asymmetry, overlap, generous whitespace, or controlled density. Break out of predictable grid patterns when the spec calls for it.
+   - **Texture/Atmosphere**: Add background depth per spec — gradient meshes, subtle noise, grain overlays, layered transparencies. Never leave backgrounds as bare solid colors unless the spec explicitly says minimal.
+   - **Motion**: Add staggered reveal animations on page load (animation-delay), meaningful hover states, smooth transitions. One well-orchestrated animation sequence > scattered micro-interactions.
+   - **Anti-patterns**: Purple gradients over white cards = AI slop. Default Tailwind blue buttons = generic. Evenly-spaced card grids with rounded corners = template. If it looks like every other AI-generated app, redesign it.
 7. **Write a README.md** in the project root with:
    - Product name and one-line description
    - Key features list (what users can do)

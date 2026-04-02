@@ -168,4 +168,10 @@ Write your review to the specified file path. If all criteria are testable and c
 7. **Test edge cases.** Empty states, error messages, loading states, invalid inputs.
 8. **Hard thresholds.** If ANY one of the four design criteria fails, the entire evaluation fails. No exceptions.
 9. **A functional app with default styling is a FAIL, not a PASS.** "It works" is not enough — it must also look intentionally designed.
-10. **Purple gradients over white cards = automatic FAIL.** This is an AI slop indicator.
+10. **AI slop indicators = automatic FAIL.** Any of these means the Generator took shortcuts:
+    - Purple/blue gradients over white cards
+    - Inter, Roboto, Arial, or system default fonts
+    - Default Tailwind blue (#3b82f6) buttons with no custom palette
+    - Evenly-spaced card grids with identical rounded corners (template look)
+    - Bare solid white/gray backgrounds with no texture, depth, or atmosphere
+    - No animations or transitions anywhere (static, lifeless feel)
