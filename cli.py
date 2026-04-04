@@ -59,7 +59,6 @@ async def call_agent(
     user_prompt: str,
     allowed_tools: list[str],
     cwd: str,
-    mcp_tools: list[str] | None = None,
     mcp_servers: dict | None = None,
     max_turns: int | None = None,
     resume: str | None = None,
@@ -69,14 +68,10 @@ async def call_agent(
     """Call a Claude agent. Pass resume=session_id to continue a previous session.
 
     mcp_servers: SDK-managed MCP servers (launched automatically, no user setup needed).
-                 Example: {"playwright": {"command": "npx", "args": ["@playwright/mcp@latest"]}}
-    mcp_tools: Legacy — references MCP servers from user's Claude CLI config.
+                 Example: {"playwright": {"command": "npx", "args": ["@anthropic-ai/mcp-server-playwright"]}}
     timeout: Wall-clock timeout in seconds. 0 = no limit. Raises AgentTimeout on expiry.
     """
     tools = list(allowed_tools)
-    if mcp_tools:
-        for mcp in mcp_tools:
-            tools.append(f"mcp__{mcp}__*")
 
     stderr_lines = []
 

@@ -33,14 +33,23 @@ Three agents orchestrated sequentially: **Planner → Generator → Evaluator**,
 orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude-opus-4-6
 ```
 
-### Agent Flow (full mode)
+### Agent Flow (simple mode — default, per article's Opus 4.6 recommendation)
+
+1. **Planner** reads `agents/frontend-design-skill.md` then generates `comms/spec.md`
+2. **Generator** builds entire app in `output/{slug}/` with TOOLS_FULL (Read/Write/Edit/Bash/Glob/Grep)
+3. **Evaluator** tests running app via Playwright MCP with TOOLS_EVALUATOR (Write only — no Read, enforcing GAN principle)
+4. On FAIL: feedback → Generator retries (max 3 build attempts, continuous session via `session_id`)
+5. If backend passes but frontend design fails → **design refinement loop** (up to 10 iterations, per article's 5-15 frontend design iterations)
+6. `comms/` artifacts archived to `output/{slug}/.harness/`
+
+### Agent Flow (full mode — sprint decomposition)
 
 1. **Planner** reads `agents/frontend-design-skill.md` then generates `comms/spec.md`
 2. Per sprint: **Generator** proposes contract → **Evaluator** reviews → agree or iterate (max 3 rounds)
-3. **Generator** builds in `output/{slug}/` with TOOLS_FULL (Read/Write/Edit/Bash/Glob/Grep)
-4. **Evaluator** tests running app via Playwright MCP with TOOLS_EVALUATOR (Write only — no Read, enforcing GAN principle)
+3. **Generator** builds in `output/{slug}/` with TOOLS_FULL
+4. **Evaluator** tests running app via Playwright MCP with TOOLS_EVALUATOR
 5. On FAIL: feedback → Generator retries (max 3 attempts, continuous session via `session_id`)
-6. After all sprints: integration evaluation across full app
+6. After all sprints: integration eval with build-fix-eval loop (Generator fixes → Evaluator re-tests)
 7. `comms/` artifacts archived to `output/{slug}/.harness/`
 
 ### Key Design Decisions
@@ -55,14 +64,17 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 
 - `orchestrator.py` — Orchestration + CLI + preflight + logging (~1000 lines, intentionally single file)
 - `cli.py` — `call_agent()` wrapper around `claude_agent_sdk.query()`. Returns `AgentResult` with session_id, tokens, cost. Exports `fmt_tokens()` and `fmt_elapsed()` shared formatters.
-- `config.py` — `CONFIG` dict, tool lists (`TOOLS_READONLY`, `TOOLS_FULL`, `TOOLS_EVALUATOR`), `CONTRACT_AGREED` constant
+- `config.py` — `CONFIG` dict, tool lists (`TOOLS_READ_WRITE`, `TOOLS_FULL`, `TOOLS_EVALUATOR`), `CONTRACT_AGREED` constant
 - `state.py` — `HarnessState` persists to `comms/status.json`. Per-sprint attempt counters, per-phase cost tracking, sprint results.
 - `server.py` — `DevServer` auto-detects project structure, manages subprocess lifecycle with process groups (`os.setsid`), health-checks via HTTP polling.
 - `agents/*.md` — System prompts. Planner reads `frontend-design-skill.md` at runtime via Read tool.
 
-### Evaluator Criteria (full-stack adapted)
+### Evaluator Criteria (two-part assessment)
 
-Product Depth (HIGH), Functionality (HIGH), Visual Design (NORMAL), Code Quality (NORMAL). Any one FAIL = entire evaluation FAIL.
+Every evaluation assesses both parts. Any single FAIL in either part = entire evaluation FAIL.
+
+- **Frontend part**: Design Quality (HIGH), Originality (HIGH), Craft (NORMAL), UI Functionality (NORMAL)
+- **Backend part**: Product Depth (HIGH), Functionality (HIGH), Code Quality (NORMAL)
 
 ## Testing Patterns
 
@@ -71,6 +83,32 @@ Product Depth (HIGH), Functionality (HIGH), Visual Design (NORMAL), Code Quality
 - Agent calls mocked with `patch("orchestrator.call_agent", ...)` returning `AgentResult`
 - `_mock_result(text)` helper creates `AgentResult` with dummy token counts
 - Tests that need `_init_output()` must set `orch._spec = None` first to force re-read
+
+## gstack
+
+Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
+
+Available skills: `/office-hours`, `/plan-ceo-review`, `/plan-eng-review`, `/plan-design-review`, `/design-consultation`, `/design-shotgun`, `/design-html`, `/review`, `/ship`, `/land-and-deploy`, `/canary`, `/benchmark`, `/browse`, `/connect-chrome`, `/qa`, `/qa-only`, `/design-review`, `/setup-browser-cookies`, `/setup-deploy`, `/retro`, `/investigate`, `/document-release`, `/codex`, `/cso`, `/autoplan`, `/careful`, `/freeze`, `/guard`, `/unfreeze`, `/gstack-upgrade`, `/learn`.
+
+## Skill routing
+
+When the user's request matches an available skill, ALWAYS invoke it using the Skill
+tool as your FIRST action. Do NOT answer directly, do NOT use other tools first.
+The skill has specialized workflows that produce better results than ad-hoc answers.
+
+Key routing rules:
+- Product ideas, "is this worth building", brainstorming → invoke office-hours
+- Bugs, errors, "why is this broken", 500 errors → invoke investigate
+- Ship, deploy, push, create PR → invoke ship
+- QA, test the site, find bugs → invoke qa
+- Code review, check my diff → invoke review
+- Update docs after shipping → invoke document-release
+- Weekly retro → invoke retro
+- Design system, brand → invoke design-consultation
+- Visual audit, design polish → invoke design-review
+- Architecture review → invoke plan-eng-review
+- Save progress, checkpoint, resume → invoke checkpoint
+- Code quality, health check → invoke health
 
 ## Git
 

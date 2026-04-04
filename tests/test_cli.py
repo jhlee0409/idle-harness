@@ -36,29 +36,6 @@ async def test_call_agent_returns_agent_result():
 
 
 @pytest.mark.anyio
-async def test_call_agent_with_mcp_tools():
-    mock_result = _mock_result_message("Response")
-
-    captured_options = {}
-
-    async def mock_query(**kwargs):
-        captured_options.update(kwargs)
-        yield mock_result
-
-    with patch("cli.query", side_effect=mock_query):
-        await call_agent(
-            system_prompt="You are an evaluator.",
-            user_prompt="Evaluate the app",
-            allowed_tools=["Read", "Write"],
-            mcp_tools=["playwright"],
-            cwd="/tmp/test",
-        )
-
-    tools = captured_options["options"].allowed_tools
-    assert any("playwright" in t for t in tools)
-
-
-@pytest.mark.anyio
 async def test_call_agent_raises_on_empty_result():
     async def mock_query(**kwargs):
         # No ResultMessage yielded — empty result
@@ -131,7 +108,6 @@ async def test_call_agent_with_disallowed_tools():
             system_prompt="You are an evaluator.",
             user_prompt="Evaluate the app",
             allowed_tools=["Read", "Write"],
-            mcp_tools=["playwright"],
             disallowed_tools=["mcp__playwright__browser_take_screenshot"],
             cwd="/tmp/test",
         )

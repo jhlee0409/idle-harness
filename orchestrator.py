@@ -10,7 +10,7 @@ import time
 from cli import call_agent, AgentError, AgentTimeout, InfraError, fmt_tokens, fmt_elapsed
 from config import (
     CONFIG, CONTRACT_AGREED,
-    TOOLS_READONLY, TOOLS_FULL, TOOLS_EVALUATOR,
+    TOOLS_READ_WRITE, TOOLS_FULL, TOOLS_EVALUATOR,
     get_harness_root,
 )
 from sprint import Sprint, parse_sprints
@@ -26,6 +26,25 @@ def _check_verdict_pass(text: str) -> bool:
 def _check_contract_agreed(text: str) -> bool:
     """Match CONTRACT_AGREED only at the start of a line (not inside 'NOT AGREED')."""
     return bool(re.search(rf"^{CONTRACT_AGREED}\b", text, re.MULTILINE))
+
+
+_FRONTEND_CRITERIA = ["Design Quality", "Originality", "Craft", "UI Functionality"]
+_BACKEND_CRITERIA = ["Product Depth", "Functionality", "Code Quality"]
+
+
+def _parse_failed_parts(text: str) -> tuple[bool, bool]:
+    """Parse evaluation text to determine which parts failed.
+
+    Returns (frontend_passed, backend_passed).
+    """
+    def _part_passed(criteria: list[str]) -> bool:
+        for c in criteria:
+            match = re.search(rf"\|\s*{c}\s*\|\s*(PASS|FAIL)\s*\|", text)
+            if match and match.group(1) == "FAIL":
+                return False
+        return True
+
+    return _part_passed(_FRONTEND_CRITERIA), _part_passed(_BACKEND_CRITERIA)
 
 
 def _slug_from_spec(spec: str) -> str:
@@ -161,7 +180,7 @@ class Orchestrator:
         agent_result = await call_agent(
             system_prompt=self.planner_prompt,
             user_prompt=prompt,
-            allowed_tools=TOOLS_READONLY,
+            allowed_tools=TOOLS_READ_WRITE,
             cwd=self.root,
             timeout=CONFIG["agent_timeout_planner"],
         )
@@ -210,7 +229,7 @@ class Orchestrator:
             gen_result = await call_agent(
                 system_prompt=self.generator_prompt,
                 user_prompt=gen_prompt,
-                allowed_tools=TOOLS_READONLY,
+                allowed_tools=TOOLS_READ_WRITE,
                 cwd=self.root,
                 timeout=CONFIG["agent_timeout_negotiate"],
             )
@@ -396,19 +415,22 @@ class Orchestrator:
         total_start = time.time()
 
         self.setup()
-        await self.plan(user_prompt)
-
         try:
+            await self.plan(user_prompt)
+
             if CONFIG["mode"] == "simple":
                 await self._run_simple()
             else:
                 await self._run_full()
         except UserAbort:
             _log("Harness", "Aborted by user.")
+        except (AgentError, RuntimeError) as exc:
+            _log("Harness", f"Fatal error: {exc}")
 
         self.state.set_phase("completed")
-        self._print_report(total_start)
-        self._archive_comms()
+        if self.output_dir:
+            self._print_report(total_start)
+            self._archive_comms()
         _log_close()
 
     async def _run_full(self):
@@ -424,6 +446,19 @@ class Orchestrator:
             contract_path = await self.negotiate_contract(sprint)
             passed = await self._retry_build_eval(sprint, contract_path, f"Sprint {sprint.number}")
 
+            # If backend passed but frontend design failed, enter design refinement
+            if not passed:
+                sprint_dir = self._sprint_dir(sprint)
+                eval_path = os.path.join(sprint_dir, "evaluation.md")
+                eval_text = _read_file_optional(eval_path)
+                if eval_text:
+                    fe_pass, be_pass = _parse_failed_parts(eval_text)
+                    if be_pass and not fe_pass:
+                        _log("Harness", "Backend passed but design failed — entering design refinement.")
+                        passed = await self._design_refinement(sprint, contract_path)
+                        if passed:
+                            self.state.set_sprint_result(sprint.number, True)
+
             # Sprint summary
             sprint_time = _elapsed(sprint_start)
             attempts = self.state.get_sprint_attempt(sprint.number, "build")
@@ -437,22 +472,29 @@ class Orchestrator:
         await self._integration_eval()
 
     async def _integration_eval(self):
-        """Final integration evaluation across all sprints (spec §9)."""
+        """Final integration evaluation across all sprints with build-fix-eval loop."""
         print(f"\n{_C.BOLD}{'─' * 60}")
         _log("Harness", "Final Integration Evaluation")
         print(f"{'─' * 60}{_C.RESET}")
-        max_attempts = 2
+        max_attempts = CONFIG["max_build_attempts"]
         eval_path = os.path.join(self.comms_dir, "integration_evaluation.md")
 
         for attempt in range(1, max_attempts + 1):
+            # --- Evaluate ---
             _log("Evaluator", f"Integration eval (attempt {attempt}/{max_attempts})...")
             self.server.start()
             start = time.time()
             try:
+                eval_context = _read_file_optional(eval_path)
+                prev_feedback = ""
+                if eval_context:
+                    prev_feedback = f"\n\nPrevious evaluation feedback:\n{eval_context}"
+
                 prompt = (
-                    f"Final Integration Evaluation.\n\n"
+                        f"Final Integration Evaluation.\n\n"
                     f"All sprints have been built. Evaluate the COMPLETE application end-to-end.\n\n"
                     f"Full product spec:\n{self.spec}\n\n"
+                    f"{prev_feedback}\n\n"
                     f"Navigate to {CONFIG['dev_server_url']}. "
                     f"Test the full user journey across all features — not just individual sprints. "
                     f"Verify that features from different sprints work together correctly. "
@@ -483,12 +525,43 @@ class Orchestrator:
                 _log("Evaluator", f"Integration eval — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
                 self.state.set_sprint_result(0, True)  # 0 = integration
                 return
-            else:
-                _log("Evaluator", f"Integration eval — {_C.RED}{_C.BOLD}FAIL{_C.RESET} ({stats})")
-                _print_required_changes(eval_result.result)
+
+            _log("Evaluator", f"Integration eval — {_C.RED}{_C.BOLD}FAIL{_C.RESET} ({stats})")
+            _print_required_changes(eval_result.result)
+
+            # --- Generator fix pass (unless last attempt) ---
+            if attempt < max_attempts:
+                _log("Generator", f"Integration fix (attempt {attempt}/{max_attempts})...")
+                fix_start = time.time()
+                fix_prompt = (
+                    f"Integration evaluation FAILED. Fix the issues below.\n\n"
+                    f"Evaluation feedback:\n{eval_result.result}\n\n"
+                    f"Product spec: Read from {self.spec_path}\n\n"
+                    f"Fix ALL Required Changes listed in the evaluation. "
+                    f"Self-verify: build must succeed, app must run. "
+                    f"Commit your changes with git."
+                )
+                try:
+                    fix_result = await call_agent(
+                        system_prompt=self.generator_prompt,
+                        user_prompt=fix_prompt,
+                        allowed_tools=TOOLS_FULL,
+                        cwd=self.output_dir,
+                        max_turns=CONFIG["generator_max_turns"],
+                        resume=self._generator_session_id,
+                        timeout=CONFIG["agent_timeout_build"],
+                    )
+                    if fix_result.session_id:
+                        self._generator_session_id = fix_result.session_id
+                    self._track_cost(fix_result, "integration_fix")
+                    _log("Generator", f"Integration fix complete. ({_fmt_stats(fix_result, fix_start)})")
+                except AgentError as exc:
+                    self._generator_session_id = None
+                    _log("Harness", f"Integration fix error: {exc}")
 
         self.state.set_sprint_result(0, False)
         _log("Harness", f"Integration eval failed after {max_attempts} attempts.")
+        _ask_user_continue("Integration evaluation")
 
     def _archive_comms(self):
         """Copy comms/ artifacts into output/{slug}/.harness/ for project-level persistence."""
@@ -500,6 +573,115 @@ class Orchestrator:
         shutil.copytree(self.comms_dir, archive_dir)
         _log("Harness", f"Build artifacts archived to {os.path.relpath(archive_dir)}")
 
+    async def _design_refinement(self, sprint: Sprint, contract_path: str):
+        """Design-focused iteration loop (per article: 5-15 iterations for frontend design).
+
+        Runs after backend criteria pass but frontend criteria (Design Quality,
+        Originality, Craft, UI Functionality) still fail. Only touches visual/UX
+        code — no backend rebuilds.
+        """
+        max_iters = CONFIG["max_design_iterations"]
+        sprint_dir = self._sprint_dir(sprint)
+        eval_path = os.path.join(sprint_dir, "evaluation.md")
+        screenshots_dir = os.path.join(sprint_dir, "screenshots")
+        contract = _read_file(contract_path)
+
+        print(f"\n{_C.BOLD}{'─' * 60}")
+        _log("Harness", f"Design Refinement (up to {max_iters} iterations)")
+        print(f"{'─' * 60}{_C.RESET}")
+
+        for iteration in range(1, max_iters + 1):
+            # --- Generator: design-only fix ---
+            prev_eval = _read_file_optional(eval_path)
+            _log("Generator", f"Design iteration {iteration}/{max_iters}...")
+            fix_start = time.time()
+            fix_prompt = (
+                f"DESIGN REFINEMENT — backend is working, focus ONLY on visual design.\n\n"
+                f"The backend criteria (Product Depth, Functionality, Code Quality) passed. "
+                f"But frontend criteria failed. Fix the design issues below.\n\n"
+                f"Previous evaluation:\n{prev_eval}\n\n"
+                f"Product spec: Read from {self.spec_path}\n\n"
+                f"Make a strategic decision: REFINE if the design direction is promising, "
+                f"or PIVOT to an entirely different aesthetic if the current approach isn't working. "
+                f"State your decision explicitly: 'STRATEGY: REFINE' or 'STRATEGY: PIVOT'.\n\n"
+                f"Do NOT change backend logic, API endpoints, or database schema. "
+                f"Focus on: colors, typography, layout, animations, textures, component styling. "
+                f"Commit your changes with git."
+            )
+            try:
+                fix_result = await call_agent(
+                    system_prompt=self.generator_prompt,
+                    user_prompt=fix_prompt,
+                    allowed_tools=TOOLS_FULL,
+                    cwd=self.output_dir,
+                    max_turns=CONFIG["generator_max_turns"],
+                    resume=self._generator_session_id,
+                    timeout=CONFIG["agent_timeout_build"],
+                )
+                if fix_result.session_id:
+                    self._generator_session_id = fix_result.session_id
+                self._track_cost(fix_result, "design_refinement")
+                _log("Generator", f"Design iteration {iteration} complete. ({_fmt_stats(fix_result, fix_start)})")
+            except AgentError as exc:
+                self._generator_session_id = None
+                _log("Harness", f"Design iteration {iteration} error: {exc}")
+                continue
+
+            # --- Evaluator: re-assess ---
+            _log("Evaluator", f"Design eval {iteration}/{max_iters}...")
+            self.server.start()
+            eval_start = time.time()
+            try:
+                eval_prompt = (
+                    f"Design Refinement Evaluation (iteration {iteration}).\n\n"
+                    f"The backend is working. Focus your assessment on frontend design criteria: "
+                    f"Design Quality, Originality, Craft, UI Functionality.\n\n"
+                    f"Sprint contract:\n{contract}\n\n"
+                    f"Product spec:\n{self.spec}\n\n"
+                    f"Navigate to {CONFIG['dev_server_url']}. "
+                    f"Evaluate the visual design against the spec's design language. "
+                    f"Also verify that backend functionality was NOT broken by the design changes. "
+                    f"Take screenshots — save to {screenshots_dir}/. "
+                    f"Write your evaluation as a response."
+                )
+                eval_result = await call_agent(
+                    system_prompt=self.evaluator_prompt,
+                    user_prompt=eval_prompt,
+                    allowed_tools=TOOLS_EVALUATOR,
+                    mcp_servers=CONFIG.get("mcp_servers"),
+                    cwd=self.root,
+                    timeout=CONFIG["agent_timeout_eval"],
+                )
+                self._track_cost(eval_result, "design_eval")
+                with open(eval_path, "w") as f:
+                    f.write(eval_result.result)
+            except AgentError as exc:
+                _log("Harness", f"Design eval {iteration} error: {exc}")
+                continue
+            finally:
+                self.server.stop()
+
+            passed = _check_verdict_pass(eval_result.result)
+            stats = _fmt_stats(eval_result, eval_start)
+            if passed:
+                _log("Evaluator", f"Design eval {iteration} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
+                self.state.set_sprint_result(sprint.number, True)
+                return True
+
+            fe_pass, _ = _parse_failed_parts(eval_result.result)
+            _log("Evaluator", f"Design eval {iteration} — {_C.RED}{_C.BOLD}FAIL{_C.RESET} ({stats})")
+            _print_eval_summary(eval_result.result)
+            if not fe_pass:
+                _print_required_changes(eval_result.result)
+            else:
+                # Frontend passed but backend regressed — stop design loop
+                _log("Harness", "Frontend design passed but backend regressed. Exiting design loop.")
+                break
+
+        _log("Harness", f"Design refinement ended after {iteration} iteration(s).")
+        _ask_user_continue("Design refinement")
+        return False
+
     async def _run_simple(self):
         single_sprint = Sprint(number=1, name="Full Build")
         self.state.set_sprint_info(current=1, total=1)
@@ -510,7 +692,18 @@ class Orchestrator:
         with open(contract_path, "w") as f:
             f.write(self.spec)
 
-        await self._retry_build_eval(single_sprint, contract_path, "Simple mode")
+        passed = await self._retry_build_eval(single_sprint, contract_path, "Simple mode")
+
+        # If backend passed but frontend design failed, enter design refinement loop
+        if not passed:
+            eval_path = os.path.join(sprint_dir, "evaluation.md")
+            eval_text = _read_file_optional(eval_path)
+            if eval_text:
+                fe_pass, be_pass = _parse_failed_parts(eval_text)
+                if be_pass and not fe_pass:
+                    _log("Harness", "Backend passed but frontend design failed — entering design refinement.")
+                    if await self._design_refinement(single_sprint, contract_path):
+                        self.state.set_sprint_result(single_sprint.number, True)
 
     def _print_report(self, total_start: float):
         status = self.state.load()
@@ -663,8 +856,11 @@ def _print_eval_summary(eval_text: str):
     if rate_match:
         print(f"    {_C.DIM}Features: {rate_match.group(1)}{_C.RESET}")
 
-    # Design assessment table — extract verdicts
-    criteria = ["Product Depth", "Functionality", "Visual Design", "Code Quality"]
+    # Two-part assessment — extract verdicts from both Frontend and Backend tables
+    criteria = [
+        "Design Quality", "Originality", "Craft", "UI Functionality",  # Frontend
+        "Product Depth", "Functionality", "Code Quality",              # Backend
+    ]
     verdicts = []
     for c in criteria:
         match = re.search(rf"\|\s*{c}\s*\|\s*(PASS|FAIL)\s*\|", eval_text)

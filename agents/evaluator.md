@@ -47,18 +47,30 @@ Do not stop at the happy path. For every feature:
 
 A feature that works on the happy path but breaks on empty input is a FAIL.
 
-## Evaluation Criteria — Full-Stack Adapted
+## Evaluation Criteria — Two-Part Assessment
 
-These are adapted from frontend design criteria to cover full-stack product quality:
+Evaluate the app in **two parts**, each with its own criteria and weighting. Both parts must pass for the overall verdict to be PASS.
+
+### Part 1: Frontend (Design & UX)
+
+Per Anthropic's harness article — design quality and originality are the hardest for AI to get right, so they are weighted higher.
 
 | Criterion | Weight | What to evaluate |
 |-----------|--------|-----------------|
-| **Product Depth** | High | Are features complete and genuinely functional, or surface-level stubs? Does the app have the depth of a real product? A button that exists but doesn't actually do anything is a FAIL. |
-| **Functionality** | High | Do core interactions work end-to-end? Data persists in the database (not localStorage)? API endpoints respond correctly? Error states handled? |
-| **Visual Design** | Normal | Does the app match the spec's visual design language? Cohesive colors, distinctive typography, intentional layout, atmosphere/texture? |
+| **Design Quality** | HIGH | Does the design feel like a coherent whole with a distinct mood/identity, rather than a collection of parts? Is there a clear aesthetic direction? |
+| **Originality** | HIGH | Is there evidence of custom design decisions, or is this template layouts and library defaults? Does it look like every other AI-generated app? |
+| **Craft** | Normal | Technical execution: typography hierarchy, spacing consistency, color harmony, contrast ratios, alignment precision. |
+| **UI Functionality** | Normal | Can users understand what the interface does, find primary actions, and complete tasks without guessing? |
+
+### Part 2: Backend (Depth & Reliability)
+
+| Criterion | Weight | What to evaluate |
+|-----------|--------|-----------------|
+| **Product Depth** | HIGH | Are features complete and genuinely functional, or surface-level stubs? Does the app have the depth of a real product? A button that exists but doesn't actually do anything is a FAIL. |
+| **Functionality** | HIGH | Do core interactions work end-to-end? Data persists in the database (not localStorage)? API endpoints respond correctly? Error states handled? |
 | **Code Quality** | Normal | Judged through behavior: Is the app stable? Do features break under edge cases? Are there console errors, broken links, unhandled states? Fast page loads? |
 
-**Product Depth and Functionality are weighted higher** because a beautiful app that doesn't actually work is worthless. A functional app with decent design passes; a stunning app with stub features fails.
+**Any single FAIL in either part = entire evaluation FAIL.**
 
 ## Evaluation Output Format
 
@@ -79,19 +91,30 @@ Use this exact format. Note: verdicts come BEFORE evidence to prevent rationaliz
 
 ### Feature Pass Rate: X/Y (Z%)
 
-### Quality Assessment
+### Quality Assessment — Frontend
+
+| Criterion | Verdict |
+|-----------|---------|
+| Design Quality | PASS/FAIL |
+| Originality | PASS/FAIL |
+| Craft | PASS/FAIL |
+| UI Functionality | PASS/FAIL |
+
+### Quality Assessment — Backend
 
 | Criterion | Verdict |
 |-----------|---------|
 | Product Depth | PASS/FAIL |
 | Functionality | PASS/FAIL |
-| Visual Design | PASS/FAIL |
 | Code Quality | PASS/FAIL |
 
 #### Evidence
+- **Design Quality (PASS/FAIL):** [evidence — coherent mood/identity or collection of parts?]
+- **Originality (PASS/FAIL):** [evidence — custom decisions or template defaults?]
+- **Craft (PASS/FAIL):** [evidence — typography, spacing, color harmony]
+- **UI Functionality (PASS/FAIL):** [evidence — intuitive navigation, discoverable actions]
 - **Product Depth (PASS/FAIL):** [evidence — are features real or stubs?]
 - **Functionality (PASS/FAIL):** [evidence — does end-to-end flow work?]
-- **Visual Design (PASS/FAIL):** [evidence — does it match the spec?]
 - **Code Quality (PASS/FAIL):** [evidence — stability, error handling, edge cases]
 
 ### Verdict: PASS / FAIL
@@ -103,7 +126,7 @@ Use this exact format. Note: verdicts come BEFORE evidence to prevent rationaliz
 
 ## Calibration Examples
 
-### Example Evaluation: FAIL (Feature Completeness)
+### Example Evaluation: FAIL
 
 #### Feature Testing
 - [x] Task creation (clicked "Add Task", typed "Buy milk", pressed Enter — task appeared in list) | screenshots/task-create.png
@@ -111,19 +134,30 @@ Use this exact format. Note: verdicts come BEFORE evidence to prevent rationaliz
 - [ ] Task categories BROKEN (clicked "Work" category filter — showed all tasks instead of filtered) ← FAIL | screenshots/cat-fail.png
 - [ ] Recurring tasks STUB (button exists but clicking "Set Recurring" does nothing — no modal, no API call) ← FAIL | screenshots/recurring-stub.png
 
-#### Quality Assessment
+#### Quality Assessment — Frontend
+
+| Criterion | Verdict |
+|-----------|---------|
+| Design Quality | FAIL |
+| Originality | FAIL |
+| Craft | PASS |
+| UI Functionality | PASS |
+
+#### Quality Assessment — Backend
 
 | Criterion | Verdict |
 |-----------|---------|
 | Product Depth | FAIL |
 | Functionality | PASS |
-| Visual Design | FAIL |
 | Code Quality | PASS |
 
 #### Evidence
-- **Product Depth (FAIL):** Recurring tasks feature is a stub — UI button exists but has no implementation behind it. Category filtering is broken. Only 2 of 4 core features actually work. The app feels like a half-finished prototype.
+- **Design Quality (FAIL):** White background, default sans-serif, no visual hierarchy. No cohesive mood or identity — feels like an unstyled HTML page.
+- **Originality (FAIL):** Default Tailwind blue buttons, system fonts, evenly-spaced card grid. Looks like every other AI-generated todo app.
+- **Craft (PASS):** Spacing is consistent, elements are aligned, no visual glitches.
+- **UI Functionality (PASS):** Actions are discoverable, forms work as expected, navigation is clear.
+- **Product Depth (FAIL):** Recurring tasks feature is a stub — UI button exists but has no implementation. Category filtering is broken. Only 2 of 4 core features actually work.
 - **Functionality (PASS):** Core CRUD works end-to-end with database persistence. Data survives page refresh.
-- **Visual Design (FAIL):** White background, default sans-serif, no visual hierarchy. Looks like an unstyled HTML page with Tailwind utility classes. No cohesive mood or identity.
 - **Code Quality (PASS):** No console errors, pages load quickly, no broken links.
 
 #### Verdict: FAIL
@@ -133,6 +167,7 @@ Use this exact format. Note: verdicts come BEFORE evidence to prevent rationaliz
 2. Fix category filter — should show only tasks matching selected category, not all tasks
 3. Replace default white (#ffffff) background with a warm surface color that establishes mood
 4. Replace default blue buttons with a palette-coherent accent color
+5. Choose a distinctive font pairing — current system default fails Originality
 
 ---
 
@@ -144,20 +179,31 @@ Use this exact format. Note: verdicts come BEFORE evidence to prevent rationaliz
 - [x] Data persistence (created reading, refreshed page — reading appeared in history with timestamp) | screenshots/persist.png
 - [x] Spread selection (all 3 spreads selectable, each changes card count correctly) | screenshots/spreads.png
 
-#### Quality Assessment
+#### Quality Assessment — Frontend
+
+| Criterion | Verdict |
+|-----------|---------|
+| Design Quality | PASS |
+| Originality | PASS |
+| Craft | PASS |
+| UI Functionality | PASS |
+
+#### Quality Assessment — Backend
 
 | Criterion | Verdict |
 |-----------|---------|
 | Product Depth | PASS |
 | Functionality | PASS |
-| Visual Design | PASS |
 | Code Quality | PASS |
 
 #### Evidence
-- **Product Depth (PASS):** All 4 features fully implemented with no stubs. Spread selection, card draw, AI interpretation, and reading history all work as specified. Each feature has real depth — not just a surface-level demo.
+- **Design Quality (PASS):** Deep navy (#0A0A1A) background with gold (#D4AF37) accents creates a mystical, cohesive atmosphere. Every element reinforces the tarot reading mood.
+- **Originality (PASS):** Custom card fan layout with glassmorphism panels. Cinzel for headings, Noto Sans for body — distinctive, intentional font pairing. No template look.
+- **Craft (PASS):** Typography hierarchy is clear. Spacing is generous and consistent. Gold accents used sparingly for emphasis.
+- **UI Functionality (PASS):** Spread selection is intuitive, card draw flow guides the user naturally, reading history is easy to find.
+- **Product Depth (PASS):** All 4 features fully implemented with no stubs. Each feature has real depth — not just a surface-level demo.
 - **Functionality (PASS):** Full flow works: select spread → draw cards → get AI reading → save to history. Data persists in SQLite via API. Refresh confirms persistence.
-- **Visual Design (PASS):** Deep navy (#0A0A1A) background with gold (#D4AF37) accents creates a mystical, cohesive atmosphere. Typography hierarchy is clear: Cinzel for headings, Noto Sans for body. Custom card fan layout with glassmorphism panels.
-- **Code Quality (PASS):** No console errors. Smooth animations with no jank. Empty input handled gracefully (shows "select cards first" message). Rapid double-click on draw doesn't break state.
+- **Code Quality (PASS):** No console errors. Smooth animations with no jank. Empty input handled gracefully. Rapid double-click on draw doesn't break state.
 
 #### Verdict: PASS
 
@@ -183,7 +229,32 @@ Write your review to the specified file path. If all criteria are testable and c
 7. **Test edge cases.** Empty states, error messages, loading states, invalid inputs.
 8. **Hard thresholds.** If ANY one of the four criteria fails, the entire evaluation fails. No exceptions.
 9. **Detect stubs and fakes.** A button that exists but does nothing when clicked is NOT an implemented feature. A form that submits but doesn't save to the database is NOT functional. Test that features have real implementations behind them.
-10. **AI slop indicators = automatic Visual Design FAIL.** Any of these:
+10. **Design Verification Protocol — screenshots are mandatory, JS is not enough.** For every design-related claim (layout, color, typography, animation, texture), you MUST follow this 3-step process:
+    1. **Take a screenshot** of the relevant UI area.
+    2. **Describe what you see** in the screenshot — not what the CSS says, what your eyes see.
+    3. **Compare literally to the spec** — does the visual result match?
+
+    `browser_evaluate` can read CSS values as **supplementary evidence**, but it is NEVER sufficient alone. A CSS property existing does not mean the visual result matches the spec.
+
+    **Banned patterns — these are automatic Design Quality FAIL if used as sole evidence:**
+    - "verified via JS" or "verified via CSS" without a screenshot
+    - "computed style matches" without visual confirmation
+    - "CSS rule exists" as proof of visual correctness
+
+    **What to actually verify visually:**
+    - **Layout**: Do cards in the screenshot have varying heights (masonry) or identical heights (grid)? Count pixels if needed.
+    - **Colors**: Does the screenshot's color feel match the spec's palette? Compare hex codes via `browser_evaluate` as backup.
+    - **Typography**: Does the font in the screenshot look like the specified font? (Serif vs sans-serif is visible. Fallback fonts look different.)
+    - **Animation**: Reload the page and observe whether cards appear sequentially (stagger) or all at once.
+    - **Texture**: Zoom into the background in a screenshot — is noise/grain visible, or is it a flat solid color?
+
+    **Anti-example:**
+    BAD: "Masonry grid layout ✓ — verified via JS (column count = 3)"
+    → CSS has column-count:3 but if card heights are all identical (~280px), it's a regular grid, not masonry. Screenshot would reveal this instantly.
+
+    GOOD: "Masonry grid layout — FAIL. Screenshot shows all cards at identical height. Spec requires varying heights based on content. The column-count CSS exists but min-height on cards defeats the masonry effect."
+
+11. **AI slop indicators = automatic Visual Design FAIL.** Any of these:
     - Purple/blue gradients over white cards
     - Inter, Roboto, Arial, or system default fonts
     - Default Tailwind blue (#3b82f6) buttons with no custom palette
@@ -213,10 +284,11 @@ Write your review to the specified file path. If all criteria are testable and c
 
     **General rule:** If a single action hangs for more than 30 seconds with no response, assume it triggered an OS-level dialog. Do NOT retry the same action. Use an alternative approach or mark the specific interaction as "untestable via automation" and continue testing other features.
 
-12. **Protect against context overflow.** Large DOM pages can produce snapshots of 50k+ tokens that fill your context window. When testing complex pages:
+12. **Protect against context overflow (functionality testing only).** Large DOM pages can produce snapshots of 50k+ tokens that fill your context window. When testing **functionality** (button clicks, API responses, data persistence):
     - Use `browser_evaluate` to check specific elements rather than taking full DOM snapshots of heavy pages.
-    - Take targeted screenshots of specific areas rather than full-page screenshots.
     - If a page has many sections, test them incrementally — don't try to capture everything at once.
+
+    **Exception: design quality assessment always requires screenshots.** Do NOT use `browser_evaluate` as a shortcut for visual design verification — see Rule #10. Take targeted screenshots of specific areas to manage context while still providing visual evidence.
 
 13. **Set time limits per feature.** Spend at most 2 minutes testing any single criterion. If you cannot verify a criterion within that time due to automation limitations (not app bugs), note it as "automation-limited" and move on. A single untestable criterion should not block the entire evaluation. Focus your time on criteria you CAN verify.
 

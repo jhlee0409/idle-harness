@@ -4,8 +4,8 @@ import tempfile
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from cli import AgentResult, InfraError
-from config import CONTRACT_AGREED, TOOLS_EVALUATOR
-from orchestrator import Orchestrator, UserAbort, _check_verdict_pass, _check_contract_agreed
+from config import CONFIG, CONTRACT_AGREED, TOOLS_EVALUATOR
+from orchestrator import Orchestrator, UserAbort, _check_verdict_pass, _check_contract_agreed, _parse_failed_parts
 
 
 SAMPLE_SPEC = """# Test App
@@ -429,7 +429,7 @@ async def test_integration_eval_pass():
 
 @pytest.mark.anyio
 async def test_integration_eval_fail():
-    """Integration eval fails after 2 attempts."""
+    """Integration eval fails after max_build_attempts with build-fix-eval loop."""
     with tempfile.TemporaryDirectory() as tmpdir:
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
@@ -440,15 +440,18 @@ async def test_integration_eval_fail():
         mock = AsyncMock(return_value=_mock_result("### Verdict: FAIL\n### Required Changes\n1. Fix everything"))
         with patch("orchestrator.call_agent", mock):
             with patch.object(orch, "server", MagicMock()):
-                await orch._integration_eval()
+                with patch("orchestrator._ask_user_continue"):
+                    await orch._integration_eval()
 
-        # Should have called agent exactly 2 times (max_attempts=2)
-        assert mock.call_count == 2
+        # max_build_attempts=3: 3 evals + 2 generator fixes = 5 agent calls
+        max_attempts = CONFIG["max_build_attempts"]
+        expected_calls = max_attempts + (max_attempts - 1)  # evals + fixes
+        assert mock.call_count == expected_calls
         status = orch.state.load()
         assert status["sprint_results"]["0"] is False
 
 
-# --- Evaluator uses TOOLS_EVALUATOR not TOOLS_READONLY ---
+# --- Evaluator uses TOOLS_EVALUATOR not TOOLS_READ_WRITE ---
 
 @pytest.mark.anyio
 async def test_evaluator_uses_restricted_tools():
@@ -528,3 +531,81 @@ async def test_run_simple_skips_negotiation():
         assert eval_called
         # Simple mode uses sprint number 1
         assert orch.state.get_sprint_results().get(1) is True
+
+
+# --- Parse failed parts ---
+
+def test_parse_failed_parts_both_pass():
+    text = """
+### Quality Assessment — Frontend
+| Criterion | Verdict |
+|-----------|---------|
+| Design Quality | PASS |
+| Originality | PASS |
+| Craft | PASS |
+| UI Functionality | PASS |
+
+### Quality Assessment — Backend
+| Criterion | Verdict |
+|-----------|---------|
+| Product Depth | PASS |
+| Functionality | PASS |
+| Code Quality | PASS |
+"""
+    fe, be = _parse_failed_parts(text)
+    assert fe is True
+    assert be is True
+
+
+def test_parse_failed_parts_frontend_fail():
+    text = """
+### Quality Assessment — Frontend
+| Criterion | Verdict |
+|-----------|---------|
+| Design Quality | FAIL |
+| Originality | FAIL |
+| Craft | PASS |
+| UI Functionality | PASS |
+
+### Quality Assessment — Backend
+| Criterion | Verdict |
+|-----------|---------|
+| Product Depth | PASS |
+| Functionality | PASS |
+| Code Quality | PASS |
+"""
+    fe, be = _parse_failed_parts(text)
+    assert fe is False
+    assert be is True
+
+
+def test_parse_failed_parts_backend_fail():
+    text = """
+### Quality Assessment — Frontend
+| Criterion | Verdict |
+|-----------|---------|
+| Design Quality | PASS |
+| Originality | PASS |
+| Craft | PASS |
+| UI Functionality | PASS |
+
+### Quality Assessment — Backend
+| Criterion | Verdict |
+|-----------|---------|
+| Product Depth | FAIL |
+| Functionality | PASS |
+| Code Quality | PASS |
+"""
+    fe, be = _parse_failed_parts(text)
+    assert fe is True
+    assert be is False
+
+
+def test_parse_failed_parts_both_fail():
+    text = """
+| Design Quality | FAIL |
+| Functionality | FAIL |
+"""
+    fe, be = _parse_failed_parts(text)
+    assert fe is False
+    assert be is False

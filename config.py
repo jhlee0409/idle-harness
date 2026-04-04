@@ -5,23 +5,23 @@ CONFIG = {
     # --- Harness mode ---
     # "full": sprint decomposition + contract negotiation + multi-eval
     # "simple": single build + single end-of-build evaluation (no sprints/contracts)
-    "mode": "full",
+    "mode": "simple",
 
     # --- Build / eval limits ---
     "max_build_attempts": 3,
+    "max_design_iterations": 10,       # per article: 5-15 iterations for frontend design
     "max_negotiation_rounds": 3,
     "generator_max_turns": 200,
 
     # --- Agent timeouts (seconds, 0 = no limit) ---
     "agent_timeout_planner": 600,       # 10 min
     "agent_timeout_negotiate": 300,     # 5 min per round
-    "agent_timeout_build": 2700,        # 45 min — covers complex sprints (observed max 14m, article implies up to 40m)
+    "agent_timeout_build": 9000,        # 2.5 hr — article's DAW Build Round 1 was 2hr 7min
     "agent_timeout_eval": 2700,         # 45 min — thorough Playwright testing can take 20-35m
     "agent_timeout_integration": 2700,  # 45 min
 
     # --- Dev server ---
     "dev_server_start_cmd": None,
-    "dev_server_stop_cmd": None,
     "dev_server_url": "http://localhost:5173",
     "backend_url": "http://localhost:8000",
     "dev_server_startup_wait": 5,
@@ -43,7 +43,7 @@ CONFIG = {
 
 CONTRACT_AGREED = "AGREED"
 
-TOOLS_READONLY = ["Read", "Write"]
+TOOLS_READ_WRITE = ["Read", "Write"]
 TOOLS_FULL = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 
 # Evaluator: Write only — no Read prevents source code access (GAN principle).

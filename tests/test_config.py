@@ -1,4 +1,4 @@
-from config import CONFIG, CONTRACT_AGREED, TOOLS_READONLY, TOOLS_FULL, TOOLS_EVALUATOR, get_server_ports
+from config import CONFIG, CONTRACT_AGREED, TOOLS_READ_WRITE, TOOLS_FULL, TOOLS_EVALUATOR, get_server_ports
 
 
 def test_config_has_required_keys():
@@ -8,7 +8,6 @@ def test_config_has_required_keys():
         "max_negotiation_rounds",
         "generator_max_turns",
         "dev_server_start_cmd",
-        "dev_server_stop_cmd",
         "dev_server_url",
         "backend_url",
         "dev_server_startup_wait",
@@ -22,7 +21,7 @@ def test_config_has_required_keys():
 
 
 def test_config_defaults():
-    assert CONFIG["mode"] == "full"
+    assert CONFIG["mode"] == "simple"
     assert CONFIG["max_build_attempts"] == 3
     assert CONFIG["max_negotiation_rounds"] == 3
     assert CONFIG["generator_max_turns"] == 200
@@ -36,7 +35,7 @@ def test_config_defaults():
 
 
 def test_constants():
-    assert "Read" in TOOLS_READONLY
+    assert "Read" in TOOLS_READ_WRITE
     assert "Bash" in TOOLS_FULL
 
 
