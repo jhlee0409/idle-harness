@@ -298,19 +298,35 @@ class Orchestrator:
         dev_server_json_path = os.path.join(self.comms_dir, "dev_server.json")
 
         label = self._sprint_label(sprint)
+        is_simple = sprint.name == "Full Build"
         _log("Generator", f"{label} — Building (attempt {attempt})...")
         start = time.time()
-        prompt = (
-            f"Build Sprint {sprint.number}: {sprint.name}.\n\n"
-            f"Sprint contract:\n{contract}\n\n"
-            f"Product spec: Read from {self.spec_path}\n"
-            f"{eval_context}\n\n"
-            f"Implement ALL criteria in the sprint contract. "
-            f"Read the product spec file for visual design language and feature details. "
-            f"Work in the current directory. Self-verify: build must succeed, app must run. "
-            f"Commit your changes with git.\n\n"
-            f"Write the dev server config to this ABSOLUTE path: {dev_server_json_path}"
-        )
+
+        if is_simple:
+            prompt = (
+                f"Build the COMPLETE application.\n\n"
+                f"Product spec:\n{contract}\n\n"
+                f"{eval_context}\n\n"
+                f"Implement EVERY feature in the product spec — ALL P0, P1, and P2 features. "
+                f"Ignore the '## Sprints' section in the spec — it is for planning reference only. "
+                f"You must build the entire application in a single pass, not just one sprint. "
+                f"Read the product spec for visual design language and feature details. "
+                f"Work in the current directory. Self-verify: build must succeed, app must run. "
+                f"Commit your changes with git.\n\n"
+                f"Write the dev server config to this ABSOLUTE path: {dev_server_json_path}"
+            )
+        else:
+            prompt = (
+                f"Build Sprint {sprint.number}: {sprint.name}.\n\n"
+                f"Sprint contract:\n{contract}\n\n"
+                f"Product spec: Read from {self.spec_path}\n"
+                f"{eval_context}\n\n"
+                f"Implement ALL criteria in the sprint contract. "
+                f"Read the product spec file for visual design language and feature details. "
+                f"Work in the current directory. Self-verify: build must succeed, app must run. "
+                f"Commit your changes with git.\n\n"
+                f"Write the dev server config to this ABSOLUTE path: {dev_server_json_path}"
+            )
 
         try:
             agent_result = await call_agent(
@@ -350,15 +366,28 @@ class Orchestrator:
         self.server.start()
         _log("Evaluator", f"{label} — Testing (attempt {attempt})...")
         start = time.time()
+        is_simple = sprint.name == "Full Build"
         try:
-            prompt = (
-                f"Evaluate Sprint {sprint.number}: {sprint.name}.\n\n"
-                f"Sprint contract (test against these criteria):\n{contract}\n\n"
-                f"Product spec:\n{self.spec}\n\n"
-                f"Navigate to {CONFIG['dev_server_url']}. Test every criterion in the sprint contract. "
-                f"Take screenshots as evidence — save them to {screenshots_dir}/. "
-                f"Write your evaluation as a response."
-            )
+            if is_simple:
+                prompt = (
+                    f"Evaluate the COMPLETE application.\n\n"
+                    f"Product spec (test against ALL features — P0, P1, and P2):\n{contract}\n\n"
+                    f"Ignore the '## Sprints' section — evaluate the entire application as one unit. "
+                    f"Every feature in the spec must be implemented and working. "
+                    f"A feature listed in the spec but not present in the app is a Product Depth FAIL.\n\n"
+                    f"Navigate to {CONFIG['dev_server_url']}. Test every feature in the product spec. "
+                    f"Take screenshots as evidence — save them to {screenshots_dir}/. "
+                    f"Write your evaluation as a response."
+                )
+            else:
+                prompt = (
+                    f"Evaluate Sprint {sprint.number}: {sprint.name}.\n\n"
+                    f"Sprint contract (test against these criteria):\n{contract}\n\n"
+                    f"Product spec:\n{self.spec}\n\n"
+                    f"Navigate to {CONFIG['dev_server_url']}. Test every criterion in the sprint contract. "
+                    f"Take screenshots as evidence — save them to {screenshots_dir}/. "
+                    f"Write your evaluation as a response."
+                )
 
             eval_result = await call_agent(
                 system_prompt=self.evaluator_prompt,
