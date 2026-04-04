@@ -275,6 +275,13 @@ class Orchestrator:
         self.state.add_sprint_timing(sprint.number, "negotiate", elapsed)
         return contract_path
 
+    @staticmethod
+    def _sprint_label(sprint: Sprint) -> str:
+        """'Sprint N' for full mode, 'Build' for simple mode (name='Full Build')."""
+        if sprint.name == "Full Build":
+            return "Build"
+        return f"Sprint {sprint.number}"
+
     async def build(self, sprint: Sprint, contract_path: str):
         contract = _read_file(contract_path)
 
@@ -290,7 +297,8 @@ class Orchestrator:
         # Generator runs in output_dir, but dev_server.json must land in comms_dir
         dev_server_json_path = os.path.join(self.comms_dir, "dev_server.json")
 
-        _log("Generator", f"Sprint {sprint.number} — Building (attempt {attempt})...")
+        label = self._sprint_label(sprint)
+        _log("Generator", f"{label} — Building (attempt {attempt})...")
         start = time.time()
         prompt = (
             f"Build Sprint {sprint.number}: {sprint.name}.\n\n"
@@ -324,7 +332,7 @@ class Orchestrator:
         self._track_cost(agent_result, "build")
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "build", elapsed)
-        _log("Generator", f"Sprint {sprint.number} — Build complete. ({_fmt_stats(agent_result, start)})")
+        _log("Generator", f"{label} — Build complete. ({_fmt_stats(agent_result, start)})")
         _print_build_summary(self.output_dir)
 
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
@@ -337,9 +345,10 @@ class Orchestrator:
         self.state.increment(sprint.number, "eval")
         attempt = self.state.get_sprint_attempt(sprint.number, "eval")
 
-        _log("Evaluator", f"Sprint {sprint.number} — Starting servers...")
+        label = self._sprint_label(sprint)
+        _log("Evaluator", f"{label} — Starting servers...")
         self.server.start()
-        _log("Evaluator", f"Sprint {sprint.number} — Testing (attempt {attempt})...")
+        _log("Evaluator", f"{label} — Testing (attempt {attempt})...")
         start = time.time()
         try:
             prompt = (
@@ -364,7 +373,7 @@ class Orchestrator:
             with open(eval_path, "w") as f:
                 f.write(eval_result.result)
         finally:
-            _log("Evaluator", f"Sprint {sprint.number} — Stopping servers...")
+            _log("Evaluator", f"{label} — Stopping servers...")
             self.server.stop()
 
         elapsed = int(time.time() - start)
@@ -373,9 +382,9 @@ class Orchestrator:
         passed = _check_verdict_pass(eval_result.result)
         stats = _fmt_stats(eval_result, start)
         if passed:
-            _log("Evaluator", f"Sprint {sprint.number} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
+            _log("Evaluator", f"{label} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
         else:
-            _log("Evaluator", f"Sprint {sprint.number} — {_C.RED}{_C.BOLD}FAIL{_C.RESET} ({stats})")
+            _log("Evaluator", f"{label} — {_C.RED}{_C.BOLD}FAIL{_C.RESET} ({stats})")
         _print_eval_summary(eval_result.result)
         if not passed:
             _print_required_changes(eval_result.result)
@@ -731,6 +740,8 @@ class Orchestrator:
             icon = f"{color}{_C.BOLD}{'PASS' if passed else 'FAIL'}{_C.RESET}"
             if num == 0:
                 label = "Integration"
+            elif CONFIG["mode"] == "simple":
+                label = "Build"
             else:
                 label = f"Sprint {num}"
 
