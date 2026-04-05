@@ -201,6 +201,47 @@ class Orchestrator:
         _log("Planner", f"Spec generated — {len(self.sprints)} sprint(s). ({_fmt_stats(agent_result, start)})")
         _print_spec_summary(self.spec, self.sprints)
 
+    async def generate_criteria(self) -> str:
+        """Generate testable criteria from spec (simple mode).
+
+        The Evaluator extracts concrete, interaction-level test criteria from the
+        high-level spec. This replaces contract negotiation in simple mode and
+        ensures Generator builds to sufficient depth.
+        """
+        criteria_path = os.path.join(self.comms_dir, "testable_criteria.md")
+        _log("Evaluator", "Generating testable criteria from spec...")
+        start = time.time()
+
+        prompt = (
+            f"Generate testable criteria from this product spec.\n\n"
+            f"Product spec:\n{self.spec}\n\n"
+            f"Use the Criteria Generation Mode described in your instructions.\n"
+            f"Cover EVERY feature (P0, P1, P2) with 5-15 criteria each.\n"
+            f"Ignore the '## Sprints' section — generate criteria for ALL features as one unit.\n\n"
+            f"Write the criteria to {criteria_path} using the Write tool."
+        )
+        agent_result = await call_agent(
+            system_prompt=self.evaluator_prompt,
+            user_prompt=prompt,
+            allowed_tools=TOOLS_EVALUATOR,
+            cwd=self.root,
+            timeout=CONFIG["agent_timeout_criteria"],
+        )
+        self._track_cost(agent_result, "criteria")
+
+        if not os.path.exists(criteria_path):
+            # Fallback: use spec as criteria if generation fails
+            _log("Evaluator", "Criteria generation did not produce file — using spec as fallback.")
+            with open(criteria_path, "w") as f:
+                f.write(self.spec)
+
+        criteria_text = _read_file(criteria_path)
+        # Count criteria lines
+        criteria_count = len([l for l in criteria_text.split("\n") if l.strip().startswith("- [")])
+        elapsed_s = int(time.time() - start)
+        _log("Evaluator", f"Generated {criteria_count} testable criteria. ({_fmt_stats(agent_result, start)})")
+        return criteria_path
+
     async def negotiate_contract(self, sprint: Sprint) -> str:
         sprint_dir = self._sprint_dir(sprint)
         proposal_path = os.path.join(sprint_dir, "contract_proposal.md")
@@ -305,13 +346,15 @@ class Orchestrator:
         if is_simple:
             prompt = (
                 f"Build the COMPLETE application.\n\n"
-                f"Product spec:\n{contract}\n\n"
+                f"Testable criteria (the Evaluator will test EACH of these individually):\n{contract}\n\n"
+                f"Product spec (read for visual design language and feature details): "
+                f"Read from {self.spec_path}\n"
                 f"{eval_context}\n\n"
-                f"Implement EVERY feature in the product spec — ALL P0, P1, and P2 features. "
-                f"Ignore the '## Sprints' section in the spec — it is for planning reference only. "
-                f"You must build the entire application in a single pass, not just one sprint. "
-                f"Read the product spec for visual design language and feature details. "
+                f"Implement EVERY criterion listed above. The Evaluator will interact with the "
+                f"running app and test each criterion one by one. A feature that exists in the UI "
+                f"but doesn't actually work when interacted with will FAIL.\n\n"
                 f"Work in the current directory. Self-verify: build must succeed, app must run. "
+                f"Walk through each criterion yourself before handing off. "
                 f"Commit your changes with git.\n\n"
                 f"Write the dev server config to this ABSOLUTE path: {dev_server_json_path}"
             )
@@ -371,12 +414,14 @@ class Orchestrator:
             if is_simple:
                 prompt = (
                     f"Evaluate the COMPLETE application.\n\n"
-                    f"Product spec (test against ALL features — P0, P1, and P2):\n{contract}\n\n"
-                    f"Ignore the '## Sprints' section — evaluate the entire application as one unit. "
-                    f"Every feature in the spec must be implemented and working. "
-                    f"A feature listed in the spec but not present in the app is a Product Depth FAIL.\n\n"
-                    f"Navigate to {CONFIG['dev_server_url']}. Test every feature in the product spec. "
-                    f"Take screenshots as evidence — save them to {screenshots_dir}/. "
+                    f"Testable criteria (test EACH one individually):\n{contract}\n\n"
+                    f"For each criterion: interact with the app, verify the expected result, "
+                    f"take a screenshot as evidence. Mark PASS or FAIL per criterion.\n"
+                    f"A criterion that cannot be verified through interaction is FAIL.\n"
+                    f"Do NOT mark a criterion PASS based on DOM/CSS inspection alone — "
+                    f"you must perform the described user action and observe the result.\n\n"
+                    f"Navigate to {CONFIG['dev_server_url']}. "
+                    f"Take screenshots — save them to {screenshots_dir}/. "
                     f"Write your evaluation as a response."
                 )
             else:
@@ -723,12 +768,15 @@ class Orchestrator:
     async def _run_simple(self):
         single_sprint = Sprint(number=1, name="Full Build")
         self.state.set_sprint_info(current=1, total=1)
-        _log("Harness", "=== Simple mode: build + evaluation (no contracts) ===")
+        _log("Harness", "=== Simple mode: build + evaluation ===")
+
+        # Generate testable criteria from spec (replaces contract negotiation)
+        criteria_path = await self.generate_criteria()
 
         sprint_dir = self._sprint_dir(single_sprint)
         contract_path = os.path.join(sprint_dir, "sprint_contract.md")
-        with open(contract_path, "w") as f:
-            f.write(self.spec)
+        # Copy criteria to sprint dir as the contract
+        shutil.copy(criteria_path, contract_path)
 
         passed = await self._retry_build_eval(single_sprint, contract_path, "Simple mode")
 

@@ -15,6 +15,7 @@ CONFIG = {
 
     # --- Agent timeouts (seconds, 0 = no limit) ---
     "agent_timeout_planner": 600,       # 10 min
+    "agent_timeout_criteria": 600,      # 10 min — testable criteria generation from spec
     "agent_timeout_negotiate": 300,     # 5 min per round
     "agent_timeout_build": 9000,        # 2.5 hr — article's DAW Build Round 1 was 2hr 7min
     "agent_timeout_eval": 2700,         # 45 min — thorough Playwright testing can take 20-35m

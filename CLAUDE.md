@@ -36,11 +36,12 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 ### Agent Flow (simple mode — default, per article's Opus 4.6 recommendation)
 
 1. **Planner** reads `agents/frontend-design-skill.md` then generates `comms/spec.md`
-2. **Generator** builds entire app in `output/{slug}/` with TOOLS_FULL (Read/Write/Edit/Bash/Glob/Grep)
-3. **Evaluator** tests running app via Playwright MCP with TOOLS_EVALUATOR (Write only — no Read, enforcing GAN principle)
-4. On FAIL: feedback → Generator retries (max 3 build attempts, continuous session via `session_id`)
-5. If backend passes but frontend design fails → **design refinement loop** (up to 10 iterations, per article's 5-15 frontend design iterations)
-6. `comms/` artifacts archived to `output/{slug}/.harness/`
+2. **Evaluator** generates `comms/testable_criteria.md` — 50-150 concrete, interaction-level test criteria from the spec (replaces contract negotiation)
+3. **Generator** builds entire app in `output/{slug}/` with TOOLS_FULL, using criteria as checklist
+4. **Evaluator** tests running app via Playwright MCP against each criterion individually
+5. On FAIL: feedback → Generator retries (max 3 build attempts, continuous session via `session_id`)
+6. If backend passes but frontend design fails → **design refinement loop** (up to 10 iterations)
+7. `comms/` artifacts archived to `output/{slug}/.harness/`
 
 ### Agent Flow (full mode — sprint decomposition)
 

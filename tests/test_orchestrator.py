@@ -498,8 +498,8 @@ def test_contract_agreed_used_in_check():
 # --- Simple mode ---
 
 @pytest.mark.anyio
-async def test_run_simple_skips_negotiation():
-    """Simple mode skips contract negotiation and uses spec as contract."""
+async def test_run_simple_generates_criteria():
+    """Simple mode generates testable criteria before building."""
     with tempfile.TemporaryDirectory() as tmpdir:
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
@@ -507,29 +507,39 @@ async def test_run_simple_skips_negotiation():
         orch._spec = None
         orch._init_output()
 
+        criteria_generated = False
         build_called = False
         eval_called = False
+
+        async def mock_generate_criteria():
+            nonlocal criteria_generated
+            criteria_generated = True
+            criteria_path = os.path.join(tmpdir, "comms", "testable_criteria.md")
+            with open(criteria_path, "w") as f:
+                f.write("- [ ] User can log in\n- [ ] Data persists after refresh\n")
+            return criteria_path
 
         async def mock_build(sprint, contract_path):
             nonlocal build_called
             build_called = True
-            # Verify contract contains the spec (not a negotiated contract)
+            # Contract should contain criteria, not raw spec
             with open(contract_path) as f:
                 content = f.read()
-            assert "# Test App" in content  # spec content used as contract
+            assert "- [ ]" in content  # criteria format, not spec
 
         async def mock_evaluate(sprint, contract_path):
             nonlocal eval_called
             eval_called = True
             return True
 
-        with patch.object(orch, "build", side_effect=mock_build):
-            with patch.object(orch, "evaluate", side_effect=mock_evaluate):
-                await orch._run_simple()
+        with patch.object(orch, "generate_criteria", side_effect=mock_generate_criteria):
+            with patch.object(orch, "build", side_effect=mock_build):
+                with patch.object(orch, "evaluate", side_effect=mock_evaluate):
+                    await orch._run_simple()
 
+        assert criteria_generated
         assert build_called
         assert eval_called
-        # Simple mode uses sprint number 1
         assert orch.state.get_sprint_results().get(1) is True
 
 

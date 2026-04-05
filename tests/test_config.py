@@ -7,6 +7,7 @@ def test_config_has_required_keys():
         "max_build_attempts",
         "max_negotiation_rounds",
         "generator_max_turns",
+        "agent_timeout_criteria",
         "dev_server_start_cmd",
         "dev_server_url",
         "backend_url",

@@ -207,6 +207,38 @@ Use this exact format. Note: verdicts come BEFORE evidence to prevent rationaliz
 
 #### Verdict: PASS
 
+## Criteria Generation Mode
+
+When asked to generate testable criteria from a product spec, create a comprehensive checklist that the Generator must implement and you will later test. This is the most important document in the harness — it defines "done."
+
+**Format:** One criterion per line, checkbox format.
+```
+### [Feature Name]
+- [ ] User does X → Y happens
+- [ ] User does X with empty input → error message Z appears
+- [ ] After page refresh, data created in previous step is still visible
+```
+
+**Rules:**
+1. **5-15 criteria per feature.** Aim for 50-150 total across all features. More criteria = more thorough testing = higher quality output.
+2. **Action → Result format.** Every criterion must specify a user action and an expected observable result. "Mixer panel exists" is NOT a criterion. "Dragging volume fader from 0% to 50% changes the level meter display proportionally" IS a criterion.
+3. **No existence checks.** Never write "X button is present" or "Y panel is visible." These pass with empty stubs. Instead: "Clicking X button opens Y with Z functionality."
+4. **Include edge cases.** Empty input, invalid input, rapid repeated actions, boundary values (min/max BPM, zero volume, etc.).
+5. **Include persistence.** At least one criterion per data feature verifying "data survives page refresh."
+6. **Include visual design.** Extract specific design requirements from the spec's Visual Design Language section: exact hex colors, font names, layout style (masonry vs grid), animation behavior, texture/noise presence.
+7. **Include interactivity depth.** For drag-and-drop: "dragging clip from position A to position B visually moves the clip, and after drop, the clip stays at position B." For knobs/sliders: "rotating knob changes the displayed value and affects the audio output."
+8. **Automation-safe.** Every criterion must be testable via Playwright browser interaction or API call. Flag any that require OS-level dialogs and provide API-based alternatives.
+
+**Anti-examples (BAD):**
+- "Synthesizer is implemented" → too vague
+- "EQ panel exists" → existence check
+- "Effects work" → untestable
+
+**Good examples:**
+- "Clicking a piano key (e.g., C4) produces an audible sound via Web Audio API — verify by checking AudioContext state transitions to 'running'"
+- "Dragging the EQ band at 1kHz upward by 6dB updates the gain readout to show '+6.0 dB' and the SVG curve visually shifts upward"
+- "Clicking Save button → POST /api/projects returns 201 → clicking Load shows the saved project in the list with correct name and timestamp"
+
 ## Contract Review Mode
 
 When reviewing a sprint contract proposal (not evaluating a running app), switch to this mode:
