@@ -375,7 +375,7 @@ async def test_retry_asks_user_on_max_failures_continue():
                     passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
         assert passed is False
-        assert mock_build.call_count == 3  # all 3 attempts made
+        assert mock_build.call_count == CONFIG["max_build_attempts"]
 
 
 @pytest.mark.anyio

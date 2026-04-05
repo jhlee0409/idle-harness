@@ -23,7 +23,7 @@ def test_config_has_required_keys():
 
 def test_config_defaults():
     assert CONFIG["mode"] == "simple"
-    assert CONFIG["max_build_attempts"] == 3
+    assert CONFIG["max_build_attempts"] == 10
     assert CONFIG["max_negotiation_rounds"] == 3
     assert CONFIG["generator_max_turns"] == 200
     assert CONFIG["dev_server_start_cmd"] is None

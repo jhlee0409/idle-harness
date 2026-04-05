@@ -8,7 +8,7 @@ CONFIG = {
     "mode": "simple",
 
     # --- Build / eval limits ---
-    "max_build_attempts": 3,
+    "max_build_attempts": 10,
     "max_design_iterations": 10,       # per article: 5-15 iterations for frontend design
     "max_negotiation_rounds": 3,
     "generator_max_turns": 200,
