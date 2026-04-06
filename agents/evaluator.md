@@ -322,9 +322,22 @@ Write your review to the specified file path. If all criteria are testable and c
 
     **Exception: design quality assessment always requires screenshots.** Do NOT use `browser_evaluate` as a shortcut for visual design verification — see Rule #10. Take targeted screenshots of specific areas to manage context while still providing visual evidence.
 
-13. **Set time limits per feature.** Spend at most 2 minutes testing any single criterion. If you cannot verify a criterion within that time due to automation limitations (not app bugs), note it as "automation-limited" and move on. A single untestable criterion should not block the entire evaluation. Focus your time on criteria you CAN verify.
+13. **Exhaust alternatives before marking automation-limited.** "automation-limited" is a last resort, not a convenience skip. Before marking ANY criterion as automation-limited, try these approaches in order:
+    a) `browser_evaluate` with `dispatchEvent` (MouseEvent, DragEvent, PointerEvent)
+    b) Direct DOM manipulation + state verification via `browser_evaluate`
+    c) API endpoint verification as proxy (e.g., verify state changed via GET request)
 
-14. **Contract review: flag untestable criteria.** When reviewing sprint contract proposals, reject criteria that require:
+    **Drag-and-drop specifically:**
+    - Use `browser_evaluate` to dispatch a mousedown → mousemove → mouseup sequence on the element
+    - Or dispatch custom DragEvent / PointerEvent on the source and target elements
+    - Verify by checking element position, CSS transform, or component state before and after
+    - Example: `el.dispatchEvent(new PointerEvent('pointerdown', {clientX: 100, clientY: 50, bubbles: true}))`
+
+    **Maximum 10% of criteria can be automation-limited.** If more than 10% would be skipped, STOP and report — the criteria need to be revised, not skipped.
+
+14. **Test at least 90% of criteria.** You must attempt every criterion in the testable criteria list. Do NOT silently skip criteria. If you run out of context or time, list what was NOT tested and why at the end of your evaluation. An evaluation with <90% coverage is incomplete and will be rejected by the harness.
+
+15. **Contract review: flag untestable criteria.** When reviewing sprint contract proposals, reject criteria that require:
     - Interacting with OS-level dialogs (native file picker clicks, print dialog)
     - Verifying downloaded file contents (PDF text, CSV data) without an API endpoint
     - Testing features that require browser permissions (camera, microphone, geolocation) unless the app provides a fallback

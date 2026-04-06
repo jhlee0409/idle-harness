@@ -7,6 +7,9 @@ CONFIG = {
     # "simple": single build + single end-of-build evaluation (no sprints/contracts)
     "mode": "simple",
 
+    # --- Model ---
+    "model": "claude-opus-4-6",
+
     # --- Build / eval limits ---
     "max_build_attempts": 10,
     "max_design_iterations": 10,       # per article: 5-15 iterations for frontend design

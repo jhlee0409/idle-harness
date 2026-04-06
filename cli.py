@@ -10,6 +10,8 @@ from claude_agent_sdk import (
     AssistantMessage,
 )
 
+from config import CONFIG
+
 
 @dataclass
 class AgentResult:
@@ -85,7 +87,7 @@ async def call_agent(
         allowed_tools=tools,
         system_prompt=system_prompt,
         permission_mode="bypassPermissions",
-        model="claude-opus-4-6",
+        model=CONFIG.get("model", "claude-opus-4-6"),
         max_buffer_size=10 * 1024 * 1024,  # 10MB — allows screenshot responses
         stderr=_capture_stderr,
     )

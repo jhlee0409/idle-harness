@@ -330,7 +330,15 @@ class Orchestrator:
         eval_path = os.path.join(sprint_dir, "evaluation.md")
         eval_context = _read_file_optional(eval_path)
         if eval_context:
-            eval_context = f"\n\nPrevious evaluation feedback:\n{eval_context}"
+            eval_context = (
+                f"\n\nPrevious evaluation feedback:\n{eval_context}\n\n"
+                f"Make a strategic decision before coding:\n"
+                f"**REFINE** if most criteria passed and failures are specific, fixable issues. "
+                f"**PIVOT** if the evaluator described fundamental problems (generic design, "
+                f"multiple simultaneous failures, or no improvement from previous attempt). "
+                f"State your decision explicitly: 'STRATEGY: REFINE — [reason]' or "
+                f"'STRATEGY: PIVOT — [reason]'."
+            )
 
         self.state.increment(sprint.number, "build")
         attempt = self.state.get_sprint_attempt(sprint.number, "build")
@@ -344,17 +352,21 @@ class Orchestrator:
         start = time.time()
 
         if is_simple:
+            criteria_count = len([l for l in contract.split("\n") if l.strip().startswith("- [")])
             prompt = (
                 f"Build the COMPLETE application.\n\n"
-                f"Testable criteria (the Evaluator will test EACH of these individually):\n{contract}\n\n"
+                f"Testable criteria ({criteria_count} criteria — the Evaluator will test EACH ONE):\n{contract}\n\n"
                 f"Product spec (read for visual design language and feature details): "
                 f"Read from {self.spec_path}\n"
                 f"{eval_context}\n\n"
-                f"Implement EVERY criterion listed above. The Evaluator will interact with the "
-                f"running app and test each criterion one by one. A feature that exists in the UI "
-                f"but doesn't actually work when interacted with will FAIL.\n\n"
+                f"You have {criteria_count} testable criteria to implement. The Evaluator will test "
+                f"EACH ONE individually by interacting with the running app. A feature that exists "
+                f"in the UI but doesn't work when interacted with will FAIL.\n\n"
+                f"Do NOT stop after implementing the basic structure. Continue until every criterion "
+                f"is satisfied. For complex applications this will take significant time — that is expected. "
+                f"Walk through each criterion yourself before handing off. Count how many you've "
+                f"satisfied vs total — if <90%, keep building.\n\n"
                 f"Work in the current directory. Self-verify: build must succeed, app must run. "
-                f"Walk through each criterion yourself before handing off. "
                 f"Commit your changes with git.\n\n"
                 f"Write the dev server config to this ABSOLUTE path: {dev_server_json_path}"
             )

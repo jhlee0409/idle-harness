@@ -62,7 +62,12 @@ Write a complete product spec in this exact format:
 ...
 
 ## AI Integration Opportunities
-[List specific ways AI can enhance this product]
+[Design AI features as tool-using agents that drive the app's own functionality, not simple chatbot wrappers. For each AI feature, specify:]
+- [What the agent can do — concrete actions it performs through the app's API (e.g., "AI assistant creates tracks, adjusts mixer levels, and adds effects via tool calls")]
+- [What tools/actions the agent needs access to — map to the app's API endpoints]
+- [What user-facing value it provides — how it accelerates the user's workflow]
+- [Natural language interfaces that translate user intent into multi-step app actions]
+- [Smart defaults, auto-completion, or content generation features where AI adds depth]
 
 ## UX Flow
 [Step-by-step user journey through the application, describing specific screens, transitions, and interactions]
