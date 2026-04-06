@@ -20,6 +20,7 @@ Before defining the visual design language, commit to a **BOLD aesthetic directi
   - Soft/pastel
   - Industrial/utilitarian
   - Or define your own
+- **Constraints**: Technical requirements (framework, performance, accessibility)
 - **Differentiation**: What makes this UNFORGETTABLE? What's the one thing someone will remember?
 
 **Choose a clear conceptual direction and execute it with precision.** Bold maximalism and refined minimalism both work — the key is intentionality, not intensity.
@@ -49,12 +50,14 @@ Before defining the visual design language, commit to a **BOLD aesthetic directi
 
 ## Backgrounds & Atmosphere
 
-Create depth rather than defaulting to solid colors:
+Create atmosphere and depth rather than defaulting to solid colors:
 - Gradient meshes
 - Noise textures
 - Geometric patterns
 - Layered transparencies
 - Dramatic shadows
+- Decorative borders
+- Custom cursors
 - Grain overlays
 
 ## Motion
@@ -71,6 +74,9 @@ Create depth rather than defaulting to solid colors:
 - Cookie-cutter card grids with identical rounded corners
 - Default Tailwind blue (#3b82f6) buttons
 - Bare solid white/gray backgrounds with no texture
+- No animations or transitions anywhere (static, lifeless feel)
+
+Interpret creatively and make unexpected choices that feel genuinely designed for the context. No design should be the same. Vary between light and dark themes, different fonts, different aesthetics. NEVER converge on common choices (Space Grotesk, for example) across generations.
 
 ## Complexity-Aesthetic Matching
 
@@ -78,3 +84,5 @@ Create depth rather than defaulting to solid colors:
 - **Minimalist designs**: Need restraint, precision, and careful attention to spacing, typography, and subtle details
 
 Elegance comes from executing the vision well.
+
+Remember: Claude is capable of extraordinary creative work. Don't hold back, show what can truly be created when thinking outside the box and committing fully to a distinctive vision.

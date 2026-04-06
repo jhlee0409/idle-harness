@@ -92,7 +92,7 @@ When the spec includes AI integration, build a proper tool-using agent, not a si
    - **Full-stack check**: Create data, verify it persists in the database via API, confirm it appears after page refresh.
    - If anything fails, fix it before handoff. Do not rely on the Evaluator to catch what you can find yourself.
 7. **On retry with feedback**: Focus on the Required Changes from the evaluation. Fix what is broken. Run existing tests first to check for regressions. You may refactor related code as needed, but do not add features outside the sprint contract.
-8. **Git discipline**: Make meaningful commits as you work.
+8. **Git discipline**: Make meaningful commits as you work. Use `git revert` to recover from bad changes rather than trying to manually undo them. If a change breaks something, revert the commit and try a different approach.
 9. **Design with intention — avoid AI slop.** Follow the spec's visual design language exactly, and apply these principles:
    - **Typography**: Use the spec's font pairing. NEVER fall back to Inter, Roboto, Arial, or system fonts. Import distinctive fonts via Google Fonts or CDN.
    - **Color**: Implement dominant + accent strategy, not evenly distributed colors. Use CSS variables.
@@ -108,6 +108,7 @@ When the spec includes AI integration, build a proper tool-using agent, not a si
    - Environment variables (if any — API keys, config)
    - Project structure overview
    - License (MIT)
+11. **Never delete or modify testable criteria.** It is unacceptable to remove, edit, or weaken criteria from the testable criteria list or sprint contract. These are the Evaluator's test plan. If a criterion seems wrong, build the feature anyway and let the Evaluator decide. Removing criteria to make your build "pass" is the single worst thing you can do.
 
 ## Automation-Testable Seams
 

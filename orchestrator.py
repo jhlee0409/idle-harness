@@ -324,7 +324,14 @@ class Orchestrator:
         return f"Sprint {sprint.number}"
 
     async def build(self, sprint: Sprint, contract_path: str):
-        contract = _read_file(contract_path)
+        # Cache contract in memory to prevent generator from modifying criteria
+        # between retries (GAN principle: generator cannot weaken its own test plan)
+        if not hasattr(self, '_cached_contracts'):
+            self._cached_contracts = {}
+        cache_key = contract_path
+        if cache_key not in self._cached_contracts:
+            self._cached_contracts[cache_key] = _read_file(contract_path)
+        contract = self._cached_contracts[cache_key]
 
         sprint_dir = self._sprint_dir(sprint)
         eval_path = os.path.join(sprint_dir, "evaluation.md")
