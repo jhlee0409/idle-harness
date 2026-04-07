@@ -31,7 +31,7 @@ This stack is chosen for reliability and self-containment. The entire app must r
 6. **Git commit** your changes with meaningful commit messages
 7. **Write `dev_server.json`** to the path provided in the prompt (an absolute path will be given). Include commands to start both servers:
    ```json
-   {"start": "cd backend && python -m uvicorn main:app --reload --port 8000 & cd frontend && npm run dev", "stop": "kill"}
+   {"start": "cd backend && python -m uvicorn main:app --reload --port 8006 & cd frontend && npm run dev -- --port 8005", "stop": "kill"}
    ```
 
 ## Contract Proposal Mode
@@ -176,7 +176,7 @@ This is the #1 cause of "styling not working" bugs in generated apps.
 
 **Every Bash command MUST complete and return.** A hanging command blocks your entire session forever.
 
-- **NEVER run servers without `timeout`.** Use: `timeout 10 bash -c 'uvicorn main:app --port 8000 &; sleep 2; curl -s http://localhost:8000/api/health; kill %1 2>/dev/null; wait 2>/dev/null'`
+- **NEVER run servers without `timeout`.** Use: `timeout 10 bash -c 'uvicorn main:app --port 8006 &; sleep 2; curl -s http://localhost:8006/api/health; kill %1 2>/dev/null; wait 2>/dev/null'`
 - **NEVER use bare `&` + `wait`** — background processes may not terminate. Always wrap in `timeout`.
 - **NEVER use `npm run dev` or `uvicorn` without `timeout`.** These are long-running servers that will hang forever.
 - **For build verification:** `timeout 30 npm run build` is fine. Builds have a natural end.

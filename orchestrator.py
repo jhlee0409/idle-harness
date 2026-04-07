@@ -1025,8 +1025,8 @@ class Orchestrator:
                 print(f"    cd backend && pip install -r requirements.txt && cd ..")
                 print(f"    cd frontend && npm install && cd ..")
                 print(f"    # Start servers:")
-                print(f"    cd backend && uvicorn main:app --reload --port 8000 &")
-                print(f"    cd frontend && npm run dev")
+                print(f"    cd backend && uvicorn main:app --reload --port 8006 &")
+                print(f"    cd frontend && npm run dev -- --port 8005")
             elif has_root_pkg:
                 print(f"    cd {rel_output}")
                 print(f"    npm install && npm run dev")

@@ -27,8 +27,8 @@ CONFIG = {
 
     # --- Dev server ---
     "dev_server_start_cmd": None,
-    "dev_server_url": "http://localhost:5173",
-    "backend_url": "http://localhost:8000",
+    "dev_server_url": "http://localhost:8005",
+    "backend_url": "http://localhost:8006",
     "dev_server_startup_wait": 5,
     "dev_server_health_timeout": 60,
 

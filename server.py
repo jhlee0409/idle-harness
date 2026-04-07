@@ -17,7 +17,7 @@ class DevServer:
         output_dir: str,
         startup_wait: int = 5,
         health_timeout: int = 60,
-        health_url: str = "http://localhost:5173",
+        health_url: str = "http://localhost:8005",
     ):
         self.comms_dir = comms_dir
         self.output_dir = output_dir
@@ -129,8 +129,8 @@ class DevServer:
                     f"{result.stderr[:500]}"
                 )
 
-        self._spawn("python3 -m uvicorn main:app --reload --port 8000", backend_dir)
-        self._spawn("npm run dev", frontend_dir)
+        self._spawn("python3 -m uvicorn main:app --reload --port 8006", backend_dir)
+        self._spawn("npm run dev -- --port 8005", frontend_dir)
 
     def stop(self):
         for proc in self.processes:

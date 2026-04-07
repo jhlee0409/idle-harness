@@ -27,8 +27,8 @@ def test_config_defaults():
     assert CONFIG["max_negotiation_rounds"] == 3
     assert CONFIG["generator_max_turns"] == 200
     assert CONFIG["dev_server_start_cmd"] is None
-    assert CONFIG["dev_server_url"] == "http://localhost:5173"
-    assert CONFIG["backend_url"] == "http://localhost:8000"
+    assert CONFIG["dev_server_url"] == "http://localhost:8005"
+    assert CONFIG["backend_url"] == "http://localhost:8006"
     assert CONFIG["dev_server_health_timeout"] == 60
     assert CONFIG["output_dir"] == "output"
     assert CONFIG["comms_dir"] == "comms"
@@ -76,6 +76,6 @@ def test_resolve_mode_explicit_overrides_auto():
 
 def test_get_server_ports():
     ports = get_server_ports()
-    assert 5173 in ports
-    assert 8000 in ports
+    assert 8005 in ports
+    assert 8006 in ports
     assert ports == sorted(set(ports))
