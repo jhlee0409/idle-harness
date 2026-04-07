@@ -60,6 +60,12 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 - **MCP is SDK-managed** — Playwright MCP launched via `mcp_servers` in `ClaudeAgentOptions`, not user-configured `.mcp.json`.
 - **`comms/` is staging, not persistence** — Wiped on each `setup()`. Project artifacts archived to `output/{slug}/.harness/` after completion.
 - **Verdict/contract parsing uses regex** — `_check_verdict_pass()` matches `^#{0,3}\s*Verdict:\s*PASS\s*$` to prevent false positives. `_check_contract_agreed()` matches `^AGREED\b`.
+- **Evaluator PASS is validated** — Orchestrator parses evaluation for automation-limited ratio; >10% skipped criteria overrides PASS to FAIL. Prevents evaluator from rubber-stamping untested features.
+- **Generator writes self_eval.md** — Mandatory self-evaluation file with per-criterion pass/fail. Orchestrator parses pass rate and logs warning if <90%.
+- **Automation-limited feedback loop** — Items the evaluator couldn't test are extracted and passed back to the generator on retry with explicit self-test instructions.
+- **Criteria generation has no fallback** — If evaluator fails to write testable_criteria.md or produces <10 criteria, harness raises RuntimeError instead of silently degrading.
+- **Evaluator gets spec in simple mode** — Product spec (with Visual Design Language) is passed inline alongside testable criteria so evaluator can assess design quality against the original design direction.
+- **Contract is cached in memory** — Orchestrator caches contract text on first read to prevent generator from modifying criteria between retries (GAN integrity).
 
 ### File Roles
 

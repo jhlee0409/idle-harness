@@ -247,14 +247,19 @@ class Orchestrator:
         self._track_cost(agent_result, "criteria")
 
         if not os.path.exists(criteria_path):
-            # Fallback: use spec as criteria if generation fails
-            _log("Evaluator", "Criteria generation did not produce file — using spec as fallback.")
-            with open(criteria_path, "w") as f:
-                f.write(self.spec)
+            raise RuntimeError(
+                "Criteria generation failed — Evaluator did not write testable_criteria.md. "
+                "Cannot proceed without testable criteria."
+            )
 
         criteria_text = _read_file(criteria_path)
-        # Count criteria lines
+        # Count criteria lines and validate minimum quality
         criteria_count = len([l for l in criteria_text.split("\n") if l.strip().startswith("- [")])
+        if criteria_count < 10:
+            raise RuntimeError(
+                f"Criteria generation produced only {criteria_count} criteria (minimum 10 required). "
+                f"The Evaluator may have failed to parse the spec correctly."
+            )
         elapsed_s = int(time.time() - start)
         _log("Evaluator", f"Generated {criteria_count} testable criteria. ({_fmt_stats(agent_result, start)})")
         return criteria_path
@@ -494,6 +499,8 @@ class Orchestrator:
                 prompt = (
                     f"Evaluate the COMPLETE application.\n\n"
                     f"Testable criteria (test EACH one individually):\n{contract}\n\n"
+                    f"Product spec (use for design quality assessment — Visual Design Language, "
+                    f"color palette, typography, layout direction):\n{self.spec}\n\n"
                     f"For each criterion: interact with the app, verify the expected result, "
                     f"take a screenshot as evidence. Mark PASS or FAIL per criterion.\n"
                     f"A criterion that cannot be verified through interaction is FAIL.\n"
