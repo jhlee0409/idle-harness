@@ -8,9 +8,6 @@ def test_config_has_required_keys():
         "max_negotiation_rounds",
         "generator_max_turns",
         "agent_timeout_criteria",
-        "quality_gate_enabled",
-        "quality_gate_timeout",
-        "quality_gate_self_eval_threshold",
         "dev_server_start_cmd",
         "dev_server_url",
         "backend_url",
@@ -36,9 +33,6 @@ def test_config_defaults():
     assert CONFIG["output_dir"] == "output"
     assert CONFIG["comms_dir"] == "comms"
     assert CONFIG["mcp_tool"] == "playwright"
-    assert CONFIG["quality_gate_enabled"] is True
-    assert CONFIG["quality_gate_timeout"] == 30
-    assert CONFIG["quality_gate_self_eval_threshold"] == 90
 
 
 def test_constants():

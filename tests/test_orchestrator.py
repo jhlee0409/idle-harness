@@ -338,8 +338,7 @@ async def test_retry_stops_on_infra_error():
             raise InfraError("JSON message exceeded maximum buffer size of 1048576 bytes")
 
         with patch.object(orch, "build", side_effect=mock_build):
-            with patch.object(orch, "_quality_gate", AsyncMock(return_value=(True, ""))):
-                with patch.object(orch, "evaluate", side_effect=mock_evaluate):
+            with patch.object(orch, "evaluate", side_effect=mock_evaluate):
                     passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
         assert passed is False
@@ -371,10 +370,9 @@ async def test_retry_asks_user_on_max_failures_continue():
         mock_eval = AsyncMock(return_value=False)  # evaluate returns bool
 
         with patch.object(orch, "build", mock_build):
-            with patch.object(orch, "_quality_gate", AsyncMock(return_value=(True, ""))):
-                with patch.object(orch, "evaluate", mock_eval):
-                    with patch("orchestrator.input", return_value="c"):  # continue
-                        passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
+            with patch.object(orch, "evaluate", mock_eval):
+                with patch("orchestrator.input", return_value="c"):  # continue
+                    passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
         assert passed is False
         assert mock_build.call_count == CONFIG["max_build_attempts"]
@@ -402,11 +400,10 @@ async def test_retry_asks_user_on_max_failures_abort():
         mock_eval = AsyncMock(return_value=False)  # evaluate returns bool
 
         with patch.object(orch, "build", mock_build):
-            with patch.object(orch, "_quality_gate", AsyncMock(return_value=(True, ""))):
-                with patch.object(orch, "evaluate", mock_eval):
-                    with patch("orchestrator.input", return_value="a"):  # abort
-                        with pytest.raises(UserAbort):
-                            await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
+            with patch.object(orch, "evaluate", mock_eval):
+                with patch("orchestrator.input", return_value="a"):  # abort
+                    with pytest.raises(UserAbort):
+                        await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
 
 # --- Integration evaluation ---
@@ -654,8 +651,7 @@ async def test_retry_stops_on_timeout():
             raise AgentTimeout("Agent timed out after 45m")
 
         with patch.object(orch, "build", side_effect=mock_build):
-            with patch.object(orch, "_quality_gate", AsyncMock(return_value=(True, ""))):
-                with patch.object(orch, "evaluate", side_effect=mock_evaluate):
+            with patch.object(orch, "evaluate", side_effect=mock_evaluate):
                     passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
         assert passed is False
@@ -694,227 +690,3 @@ def test_parse_automation_limited_empty():
     limited, total = _parse_automation_limited("No criteria here.")
     assert total == 0
     assert limited == 0
-
-
-# --- Quality Gate ---
-
-@pytest.mark.anyio
-async def test_quality_gate_skip_when_disabled():
-    """Quality gate returns (True, '') when disabled in config."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        orch = _setup_orch(tmpdir)
-        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
-            f.write(SAMPLE_SPEC)
-        orch._spec = None
-        orch._init_output()
-
-        from sprint import Sprint
-        sprint = Sprint(number=1, name="Full Build")
-
-        with patch.dict("config.CONFIG", {"quality_gate_enabled": False}):
-            passed, feedback = await orch._quality_gate(sprint)
-
-        assert passed is True
-        assert feedback == ""
-
-
-@pytest.mark.anyio
-async def test_quality_gate_passes_clean_project():
-    """Quality gate passes when all subprocess calls succeed."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        orch = _setup_orch(tmpdir)
-        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
-            f.write(SAMPLE_SPEC)
-        orch._spec = None
-        orch._init_output()
-
-        # Create minimal project structure
-        os.makedirs(os.path.join(orch.output_dir, "frontend"), exist_ok=True)
-        os.makedirs(os.path.join(orch.output_dir, "backend"), exist_ok=True)
-        import json
-        with open(os.path.join(orch.output_dir, "frontend", "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "vite build", "dev": "vite"}}, f)
-        os.makedirs(os.path.join(orch.output_dir, "frontend", "node_modules"), exist_ok=True)
-        with open(os.path.join(orch.output_dir, "backend", "main.py"), "w") as f:
-            f.write("app = None")
-
-        from sprint import Sprint
-        sprint = Sprint(number=1, name="Full Build")
-        orch._sprint_dir(sprint)  # create sprint dir
-
-        # Write passing self-eval
-        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
-        with open(os.path.join(sprint_dir, "self_eval.md"), "w") as f:
-            f.write("Self-eval pass rate: 45/50 (90%)")
-
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
-
-        with patch("orchestrator.subprocess.run", return_value=mock_result):
-            passed, feedback = await orch._quality_gate(sprint)
-
-        assert passed is True
-        assert feedback == ""
-
-
-@pytest.mark.anyio
-async def test_quality_gate_fails_npm_build():
-    """Quality gate fails when npm run build returns non-zero."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        orch = _setup_orch(tmpdir)
-        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
-            f.write(SAMPLE_SPEC)
-        orch._spec = None
-        orch._init_output()
-
-        # Single-project layout
-        import json
-        with open(os.path.join(orch.output_dir, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "vite build"}}, f)
-        os.makedirs(os.path.join(orch.output_dir, "node_modules"), exist_ok=True)
-
-        from sprint import Sprint
-        sprint = Sprint(number=1, name="Full Build")
-        orch._sprint_dir(sprint)
-
-        fail_result = MagicMock()
-        fail_result.returncode = 1
-        fail_result.stdout = ""
-        fail_result.stderr = "TypeScript error: Property 'x' does not exist"
-
-        with patch("orchestrator.subprocess.run", return_value=fail_result):
-            passed, feedback = await orch._quality_gate(sprint)
-
-        assert passed is False
-        assert "npm run build failed" in feedback
-
-
-@pytest.mark.anyio
-async def test_quality_gate_fails_self_eval_below_threshold():
-    """Quality gate fails when self-eval pass rate is below threshold."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        orch = _setup_orch(tmpdir)
-        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
-            f.write(SAMPLE_SPEC)
-        orch._spec = None
-        orch._init_output()
-
-        from sprint import Sprint
-        sprint = Sprint(number=1, name="Full Build")
-        sprint_dir = orch._sprint_dir(sprint)
-
-        # Write failing self-eval
-        with open(os.path.join(sprint_dir, "self_eval.md"), "w") as f:
-            f.write("Self-eval pass rate: 5/10 (50%)")
-
-        # No project structure → skip build/test steps, only self-eval runs
-        passed, feedback = await orch._quality_gate(sprint)
-
-        assert passed is False
-        assert "50%" in feedback
-        assert "below 90%" in feedback
-
-
-@pytest.mark.anyio
-async def test_quality_gate_skips_tests_when_no_test_files():
-    """Quality gate should not run pytest/vitest when no test files exist."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        orch = _setup_orch(tmpdir)
-        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
-            f.write(SAMPLE_SPEC)
-        orch._spec = None
-        orch._init_output()
-
-        # Backend with no test files
-        os.makedirs(os.path.join(orch.output_dir, "backend"), exist_ok=True)
-        with open(os.path.join(orch.output_dir, "backend", "main.py"), "w") as f:
-            f.write("app = None")
-
-        from sprint import Sprint
-        sprint = Sprint(number=1, name="Full Build")
-        orch._sprint_dir(sprint)
-
-        commands_run = []
-
-        def mock_run(cmd, **kwargs):
-            commands_run.append(cmd)
-            result = MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
-
-        with patch("orchestrator.subprocess.run", side_effect=mock_run):
-            passed, feedback = await orch._quality_gate(sprint)
-
-        assert passed is True
-        # pytest should not have been called
-        assert not any("pytest" in str(c) for c in commands_run)
-
-
-@pytest.mark.anyio
-async def test_quality_gate_handles_subprocess_timeout():
-    """Quality gate handles subprocess.TimeoutExpired gracefully."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        orch = _setup_orch(tmpdir)
-        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
-            f.write(SAMPLE_SPEC)
-        orch._spec = None
-        orch._init_output()
-
-        import json
-        with open(os.path.join(orch.output_dir, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "vite build"}}, f)
-        os.makedirs(os.path.join(orch.output_dir, "node_modules"), exist_ok=True)
-
-        from sprint import Sprint
-        sprint = Sprint(number=1, name="Full Build")
-        orch._sprint_dir(sprint)
-
-        import subprocess as sp
-        with patch("orchestrator.subprocess.run", side_effect=sp.TimeoutExpired("npm run build", 30)):
-            passed, feedback = await orch._quality_gate(sprint)
-
-        assert passed is False
-        assert "timed out" in feedback
-
-
-@pytest.mark.anyio
-async def test_quality_gate_feedback_written_to_eval():
-    """When quality gate fails, feedback is written to evaluation.md and evaluate() is NOT called."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        orch = _setup_orch(tmpdir)
-        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
-            f.write(SAMPLE_SPEC)
-        orch._spec = None
-        orch._init_output()
-
-        from sprint import Sprint
-        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Users can log in")
-        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
-        os.makedirs(sprint_dir, exist_ok=True)
-        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
-        with open(contract_path, "w") as f:
-            f.write("# Contract\n- [ ] Login works")
-
-        mock_build = AsyncMock()
-        mock_eval = AsyncMock(return_value=False)
-        mock_gate = AsyncMock(return_value=(False, "QUALITY GATE FAILED.\n\n1. npm run build failed"))
-
-        with patch.object(orch, "build", mock_build):
-            with patch.object(orch, "_quality_gate", mock_gate):
-                with patch.object(orch, "evaluate", mock_eval):
-                    with patch("orchestrator.input", return_value="c"):
-                        passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
-
-        assert passed is False
-        # evaluate should NOT have been called (gate failed)
-        mock_eval.assert_not_called()
-        # feedback should be written to evaluation.md
-        eval_path = os.path.join(sprint_dir, "evaluation.md")
-        assert os.path.exists(eval_path)
-        with open(eval_path) as f:
-            content = f.read()
-        assert "QUALITY GATE FAILED" in content

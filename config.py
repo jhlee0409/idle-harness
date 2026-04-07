@@ -24,11 +24,6 @@ CONFIG = {
     "agent_timeout_eval": 2700,         # 45 min — thorough Playwright testing can take 20-35m
     "agent_timeout_integration": 2700,  # 45 min
 
-    # --- Quality Gate (between build and evaluate) ---
-    "quality_gate_enabled": True,
-    "quality_gate_timeout": 30,              # per-step timeout in seconds
-    "quality_gate_self_eval_threshold": 90,  # minimum self-eval pass rate (%)
-
     # --- Dev server ---
     "dev_server_start_cmd": None,
     "dev_server_url": "http://localhost:5173",

@@ -470,169 +470,18 @@ class Orchestrator:
         _log("Generator", f"{label} — Build complete. ({_fmt_stats(agent_result, start)})")
         _print_build_summary(self.output_dir)
 
-    async def _quality_gate(self, sprint: Sprint) -> tuple[bool, str]:
-        """Run local verification between build() and evaluate().
-
-        Checks: frontend build, backend import, tests, self-eval pass rate.
-        Returns (passed, feedback). Feedback is written to evaluation.md on failure
-        so the Generator gets it on retry.
-        """
-        if not CONFIG.get("quality_gate_enabled", True):
-            return True, ""
-
-        _log("Harness", "Quality gate — running local checks...")
-        timeout = CONFIG.get("quality_gate_timeout", 30)
-        failures = []
-
-        has_backend = os.path.isdir(os.path.join(self.output_dir, "backend"))
-        has_frontend_dir = os.path.isdir(os.path.join(self.output_dir, "frontend"))
-        has_root_pkg = os.path.exists(os.path.join(self.output_dir, "package.json"))
-
-        # --- Step 1: Frontend build ---
-        fe_dir = None
-        if has_frontend_dir:
-            fe_dir = os.path.join(self.output_dir, "frontend")
-        elif has_root_pkg:
-            fe_dir = self.output_dir
-
-        if fe_dir:
-            pkg_path = os.path.join(fe_dir, "package.json")
-            has_build_script = False
-            if os.path.exists(pkg_path):
-                try:
-                    import json as _json
-                    with open(pkg_path) as f:
-                        pkg = _json.load(f)
-                    has_build_script = "build" in pkg.get("scripts", {})
-                except (ValueError, KeyError):
-                    pass
-
-            if not os.path.isdir(os.path.join(fe_dir, "node_modules")):
-                try:
-                    result = subprocess.run(
-                        "npm install", shell=True, cwd=fe_dir,
-                        capture_output=True, text=True, timeout=timeout,
-                    )
-                    if result.returncode != 0:
-                        failures.append(f"npm install failed:\n{result.stderr[:500]}")
-                except subprocess.TimeoutExpired:
-                    failures.append(f"npm install timed out after {timeout}s")
-
-            if has_build_script and not failures:
-                try:
-                    result = subprocess.run(
-                        "npm run build", shell=True, cwd=fe_dir,
-                        capture_output=True, text=True, timeout=timeout,
-                    )
-                    if result.returncode != 0:
-                        failures.append(f"npm run build failed:\n{result.stderr[:500]}")
-                except subprocess.TimeoutExpired:
-                    failures.append(f"npm run build timed out after {timeout}s")
-
-        # --- Step 2: Backend import check ---
-        if has_backend:
-            backend_dir = os.path.join(self.output_dir, "backend")
-            req = os.path.join(backend_dir, "requirements.txt")
-            if os.path.exists(req):
-                try:
-                    result = subprocess.run(
-                        "pip3 install -r requirements.txt",
-                        shell=True, cwd=backend_dir,
-                        capture_output=True, text=True, timeout=timeout,
-                    )
-                    if result.returncode != 0:
-                        failures.append(f"pip install failed:\n{result.stderr[:500]}")
-                except subprocess.TimeoutExpired:
-                    failures.append(f"pip install timed out after {timeout}s")
-
-            if not any("pip install" in f for f in failures):
-                main_py = os.path.join(backend_dir, "main.py")
-                if os.path.exists(main_py):
-                    try:
-                        result = subprocess.run(
-                            'python3 -c "import ast; ast.parse(open(\'main.py\').read())"',
-                            shell=True, cwd=backend_dir,
-                            capture_output=True, text=True, timeout=timeout,
-                        )
-                        if result.returncode != 0:
-                            failures.append(f"Backend syntax check failed (main.py):\n{result.stderr[:500]}")
-                    except subprocess.TimeoutExpired:
-                        failures.append(f"Backend syntax check timed out after {timeout}s")
-
-        # --- Step 3: Test execution (only if test files exist) ---
-        if has_backend:
-            backend_dir = os.path.join(self.output_dir, "backend")
-            test_dir = os.path.join(backend_dir, "tests")
-            has_tests = (
-                os.path.isdir(test_dir) or
-                any(f.startswith("test_") and f.endswith(".py")
-                    for f in os.listdir(backend_dir) if os.path.isfile(os.path.join(backend_dir, f)))
-            )
-            if has_tests:
-                try:
-                    result = subprocess.run(
-                        "python3 -m pytest -x -q --tb=short",
-                        shell=True, cwd=backend_dir,
-                        capture_output=True, text=True, timeout=timeout,
-                    )
-                    if result.returncode != 0:
-                        failures.append(f"pytest failed:\n{result.stdout[:300]}\n{result.stderr[:200]}")
-                except subprocess.TimeoutExpired:
-                    failures.append(f"pytest timed out after {timeout}s")
-
-        if fe_dir:
-            has_vitest = (
-                os.path.exists(os.path.join(fe_dir, "vitest.config.ts")) or
-                os.path.exists(os.path.join(fe_dir, "vitest.config.js"))
-            )
-            if not has_vitest and os.path.exists(os.path.join(fe_dir, "package.json")):
-                try:
-                    import json as _json
-                    with open(os.path.join(fe_dir, "package.json")) as f:
-                        pkg = _json.load(f)
-                    has_vitest = "vitest" in pkg.get("devDependencies", {})
-                except (ValueError, KeyError):
-                    pass
-            if has_vitest:
-                try:
-                    result = subprocess.run(
-                        "npx vitest run --reporter=verbose",
-                        shell=True, cwd=fe_dir,
-                        capture_output=True, text=True, timeout=timeout,
-                    )
-                    if result.returncode != 0:
-                        failures.append(f"vitest failed:\n{result.stdout[:300]}\n{result.stderr[:200]}")
-                except subprocess.TimeoutExpired:
-                    failures.append(f"vitest timed out after {timeout}s")
-
-        # --- Step 4: Self-eval gate ---
+        # Log Generator self-eval (informational — Evaluator is the real gate)
         self_eval_path = os.path.join(self._sprint_dir(sprint), "self_eval.md")
         self_eval_text = _read_file_optional(self_eval_path)
-        threshold = CONFIG.get("quality_gate_self_eval_threshold", 90)
         if self_eval_text:
             rate_match = re.search(r"pass rate:\s*(\d+)/(\d+)", self_eval_text, re.IGNORECASE)
             if rate_match:
                 passed_count = int(rate_match.group(1))
                 total_count = int(rate_match.group(2))
                 pct = int(passed_count / total_count * 100) if total_count > 0 else 0
-                _log("Harness", f"Quality gate — self-eval: {passed_count}/{total_count} ({pct}%)")
-                if pct < threshold:
-                    failures.append(
-                        f"Self-eval pass rate {pct}% is below {threshold}% threshold "
-                        f"({passed_count}/{total_count} criteria). "
-                        f"Continue building until ≥{threshold}% criteria are satisfied."
-                    )
-
-        # --- Result ---
-        if failures:
-            feedback = "QUALITY GATE FAILED. Fix these issues before the Evaluator tests your app:\n\n"
-            for i, f in enumerate(failures, 1):
-                feedback += f"{i}. {f}\n\n"
-            _log("Harness", f"Quality gate — {_C.RED}FAIL{_C.RESET} ({len(failures)} issue(s))")
-            return False, feedback
-
-        _log("Harness", f"Quality gate — {_C.GREEN}PASS{_C.RESET}")
-        return True, ""
+                _log("Generator", f"Self-eval: {passed_count}/{total_count} ({pct}%) criteria satisfied.")
+                if pct < 90:
+                    _log("Harness", f"Self-eval below 90% ({pct}%). Generator should have continued building.")
 
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
         # Use cached contract (GAN principle — same as build())
@@ -726,18 +575,7 @@ class Orchestrator:
         for attempt in range(CONFIG["max_build_attempts"]):
             try:
                 await self.build(sprint, contract_path)
-
-                # Quality gate: fast local checks before expensive Evaluator
-                gate_passed, gate_feedback = await self._quality_gate(sprint)
-                if not gate_passed:
-                    _log("Harness", f"{label} — skipping evaluation (quality gate failed)")
-                    sprint_dir = self._sprint_dir(sprint)
-                    eval_path = os.path.join(sprint_dir, "evaluation.md")
-                    with open(eval_path, "w") as f:
-                        f.write(gate_feedback)
-                    passed = False
-                else:
-                    passed = await self.evaluate(sprint, contract_path)
+                passed = await self.evaluate(sprint, contract_path)
             except InfraError as exc:
                 _log("Harness", f"{label} attempt {attempt + 1} INFRA ERROR: {exc}")
                 _log("Harness", f"Infrastructure error — rebuilding won't help. Stopping retries for {label}.")
