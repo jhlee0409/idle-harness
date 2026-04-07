@@ -1560,21 +1560,31 @@ def _cmd_clean(clean_all: bool = False):
     comms_dir = os.path.join(harness_root, CONFIG["comms_dir"])
     output_base = os.path.join(harness_root, CONFIG["output_dir"])
 
-    cleaned = []
+    print(f"{_C.BOLD}Cleaning harness artifacts{_C.RESET}")
+
     # Clean comms/
     if os.path.isdir(comms_dir):
+        files = [f for f in os.listdir(comms_dir) if not f.startswith(".")]
         shutil.rmtree(comms_dir)
-        cleaned.append("comms/")
-
-    if clean_all and os.path.isdir(output_base):
-        # Force remove — output/ contains git repos with locked .git dirs
-        subprocess.run(["rm", "-rf", output_base], capture_output=True)
-        cleaned.append("output/")
-
-    if cleaned:
-        print(f"{_C.GREEN}Cleaned: {', '.join(cleaned)}{_C.RESET}")
+        print(f"  {_C.GREEN}✓{_C.RESET} comms/ removed ({len(files)} item(s))")
     else:
-        print("Nothing to clean.")
+        print(f"  {_C.DIM}– comms/ already empty{_C.RESET}")
+
+    # Clean output/
+    if clean_all:
+        if os.path.isdir(output_base):
+            projects = [d for d in os.listdir(output_base)
+                        if os.path.isdir(os.path.join(output_base, d))]
+            # Force remove — output/ contains git repos with locked .git dirs
+            subprocess.run(["rm", "-rf", output_base], capture_output=True)
+            if projects:
+                print(f"  {_C.GREEN}✓{_C.RESET} output/ removed ({len(projects)} project(s): {', '.join(projects)})")
+            else:
+                print(f"  {_C.GREEN}✓{_C.RESET} output/ removed (empty)")
+        else:
+            print(f"  {_C.DIM}– output/ already empty{_C.RESET}")
+
+    print()
 
 
 def main():
