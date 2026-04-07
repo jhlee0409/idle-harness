@@ -85,6 +85,15 @@ Every evaluation assesses both parts. Any single FAIL in either part = entire ev
 - **Frontend part**: Design Quality (HIGH), Originality (HIGH), Craft (NORMAL), UI Functionality (NORMAL)
 - **Backend part**: Product Depth (HIGH), Functionality (HIGH), Code Quality (NORMAL)
 
+### Production Readiness (mandatory in all evaluations)
+
+Every evaluation includes mandatory production readiness checks. An app that passes features but fails production readiness is a FAIL.
+
+- **Responsive**: Evaluator tests at 375px viewport width. Navigation must collapse, no horizontal scroll, text readable.
+- **UI States**: Every data-driven component must show loading, empty, error, and success states. Blank pages = FAIL.
+- **Error Handling**: Forms must show inline validation errors. API failures must show user-friendly messages with retry. Silent failures = FAIL.
+- **Criteria generation**: Evaluator's testable criteria always include responsive, UI states, and error handling criteria as mandatory sections.
+
 ## Testing Patterns
 
 - Tests use `tempfile.TemporaryDirectory()` for isolated state

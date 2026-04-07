@@ -111,6 +111,44 @@ When the spec includes AI integration, build a proper tool-using agent, not a si
    - License (MIT)
 11. **Never delete or modify testable criteria.** It is unacceptable to remove, edit, or weaken criteria from the testable criteria list or sprint contract. These are the Evaluator's test plan. If a criterion seems wrong, build the feature anyway and let the Evaluator decide. Removing criteria to make your build "pass" is the single worst thing you can do.
 
+## Production Readiness — Deploy-Ready Quality
+
+The app you build must be ready to deploy and use immediately. Not a demo, not a prototype. A real product.
+
+### Responsive Design
+- **Mobile-first**: Design for 375px width first, then scale up. Every page must be usable on mobile.
+- Use responsive breakpoints: `sm:640px`, `md:768px`, `lg:1024px`. Test your layout mentally at each breakpoint.
+- Navigation must collapse to a hamburger menu or bottom nav on mobile. Tables must scroll horizontally or stack vertically.
+- Touch targets must be at least 44x44px on mobile. No tiny buttons or links.
+- Images must use `max-width: 100%` and `object-fit: cover`. No horizontal scrollbars.
+
+### UI States — Every Data-Driven Component Must Have All Four
+1. **Loading state**: Skeleton screens or spinner while data fetches. Never show a blank page.
+2. **Empty state**: Helpful message + call-to-action when there's no data yet. "No projects yet. Create your first one." with a prominent button.
+3. **Error state**: User-friendly error messages when API calls fail. "Something went wrong. Try again." with a retry button. Never show raw stack traces or "undefined".
+4. **Success state**: The normal data-loaded view.
+
+If a component fetches data and you only implement the success state, the Evaluator will FAIL you. Loading spinners, empty states, and error recovery are not optional.
+
+### Error Handling
+- **Every `fetch()` / API call** must have a try-catch with user-facing error feedback (toast, inline message, or error boundary).
+- **Form submissions** must show validation errors inline next to the field, not just a console.log. Disable the submit button while submitting. Show success feedback after completion.
+- **Optimistic updates** must have rollback on failure. If you show a change before the API confirms it, revert on error.
+- **API endpoints** must return proper HTTP status codes (400 for validation, 404 for not found, 500 for server errors) with JSON error bodies.
+
+### Polish Details
+- **Favicon**: Include a simple favicon (use an emoji SVG: `<link rel="icon" href="data:image/svg+xml,<svg ...>...">`).
+- **Page title**: Dynamic `<title>` that reflects the current page/state.
+- **Meta viewport**: `<meta name="viewport" content="width=device-width, initial-scale=1">` (Vite includes this by default, but verify).
+- **Focus management**: Forms must show focus rings on keyboard navigation. Modal dialogs must trap focus.
+- **Transitions**: Page/view transitions should be smooth (fade, slide). No jarring content pops.
+- **Scroll behavior**: Long lists should have proper scrolling containers. The page body should not scroll when a modal is open.
+
+### Data Integrity
+- **Validation on BOTH sides**: Frontend validates before sending. Backend re-validates before writing. Never trust the client.
+- **Unique constraints**: If something should be unique (email, slug, name), enforce it at the database level with a unique index, not just app-level checks.
+- **Cascade deletes**: When deleting a parent entity, handle child entities (cascade delete or prevent deletion with a clear error message).
+
 ## Automation-Testable Seams
 
 The Evaluator tests your app via Playwright MCP — browser automation, not manual interaction. It cannot interact with OS-level dialogs or elements outside the browser DOM. **Build the best app possible**, but provide programmatic fallbacks so the Evaluator can verify features:

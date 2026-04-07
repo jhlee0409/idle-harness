@@ -44,8 +44,32 @@ Do not stop at the happy path. For every feature:
 3. Test with invalid input
 4. Test after page refresh (persistence check)
 5. Test rapid repeated actions (double-click, rapid submit)
+6. Test at mobile viewport (resize to 375px width and verify layout)
+7. Test error recovery (if an action fails, can the user recover?)
 
 A feature that works on the happy path but breaks on empty input is a FAIL.
+
+## Production Readiness Testing
+
+These checks are MANDATORY for every evaluation. An app that passes feature tests but fails production readiness is NOT deployable and should FAIL.
+
+### Responsive Check (test at EVERY evaluation)
+1. Use `browser_resize` to set viewport to **375x812** (iPhone SE).
+2. Take a screenshot at mobile viewport.
+3. Verify: no horizontal scrollbar, text readable, primary actions accessible, navigation usable.
+4. Resize back to **1280x800** for the rest of testing.
+5. If the app is completely unusable at mobile width (content cut off, buttons unreachable, text unreadable), this is a **UI Functionality FAIL**.
+
+### UI States Check (test for EVERY data-driven feature)
+1. **Loading state**: Navigate to the page. Before data loads, is there a loading indicator? Or does the page flash blank then show content? A blank flash is a FAIL.
+2. **Empty state**: If you can, delete all data or navigate to a fresh context. Is there a helpful empty state, or just a blank area? A blank area with no guidance is a FAIL.
+3. **Error state**: Use `browser_evaluate` to intercept a fetch and return a 500, then observe: does the app show an error message, or does it silently break? Silent failure is a FAIL.
+
+### Error Handling Check (test for EVERY form)
+1. Submit the form with empty required fields. Are inline validation messages shown next to the relevant fields?
+2. Submit with obviously invalid data (e.g., "abc" in a number field). Is a specific error shown?
+3. If validation fails, correct the issue and resubmit. Does it work normally?
+4. A form that shows only `window.alert()` or browser default tooltips for validation is a FAIL.
 
 ## Evaluation Criteria — Two-Part Assessment
 
@@ -228,6 +252,35 @@ When asked to generate testable criteria from a product spec, create a comprehen
 6. **Include visual design.** Extract specific design requirements from the spec's Visual Design Language section: exact hex colors, font names, layout style (masonry vs grid), animation behavior, texture/noise presence.
 7. **Include interactivity depth.** For drag-and-drop: "dragging clip from position A to position B visually moves the clip, and after drop, the clip stays at position B." For knobs/sliders: "rotating knob changes the displayed value and affects the audio output."
 8. **Automation-safe.** Every criterion must be testable via Playwright browser interaction or API call. Flag any that require OS-level dialogs and provide API-based alternatives.
+9. **Include production readiness criteria.** EVERY feature set must include these categories. They are not optional extras — they define the difference between a demo and a deployable product:
+
+**Responsive design (MANDATORY — include for every app):**
+```
+### Responsive Design
+- [ ] At 375px viewport width, the navigation collapses to a mobile-friendly layout (hamburger menu, bottom nav, or drawer) — no horizontal scrollbar visible
+- [ ] At 375px viewport width, all primary actions (create, submit, navigate) are reachable without horizontal scrolling
+- [ ] At 375px viewport width, text is readable without zooming (minimum 14px effective font size)
+- [ ] At 768px viewport width, the layout adapts appropriately (sidebar appears or grid columns adjust)
+- [ ] No content is cut off or overlapping at any viewport width between 375px and 1440px
+```
+
+**UI states (MANDATORY — include for every data-driven feature):**
+```
+### UI States
+- [ ] When the page first loads with data, a loading indicator (skeleton or spinner) is visible before content appears — not a blank white page
+- [ ] When there is no data yet (first-time user), an empty state message with a call-to-action is shown (e.g., "No items yet. Create your first one.")
+- [ ] When the API returns an error (e.g., server down), an error message is shown to the user with a retry option — not a blank page or console error
+- [ ] Form submission shows a loading/disabled state on the submit button while the request is in-flight
+- [ ] After successful form submission, the user sees confirmation (toast, redirect, or inline success message)
+```
+
+**Error handling (MANDATORY — include for every form/input):**
+```
+### Error Handling
+- [ ] Submitting a form with empty required fields shows inline validation messages next to each field — not a browser default tooltip or alert()
+- [ ] Submitting invalid data (e.g., malformed email, negative number where positive expected) shows a specific error message
+- [ ] After a validation error, correcting the field and resubmitting succeeds normally
+```
 
 **Anti-examples (BAD):**
 - "Synthesizer is implemented" → too vague

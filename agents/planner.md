@@ -72,6 +72,18 @@ Write a complete product spec in this exact format:
 ## UX Flow
 [Step-by-step user journey through the application, describing specific screens, transitions, and interactions]
 
+## Production Requirements
+This app must be deploy-ready. Include these in the spec:
+
+### Responsive Design
+[Describe the responsive strategy: mobile-first breakpoints, navigation collapse behavior, grid column changes. Specify what the mobile layout looks like — this is NOT optional.]
+
+### UI States
+[For each data-driven feature, specify: loading state appearance, empty state message + CTA, error state appearance. Be specific — "shows a spinner" is not enough. "A 3-column skeleton grid with pulsing animation matching the card layout" is specific.]
+
+### Error UX
+[Describe form validation style (inline errors, toast notifications, or both), API error handling (retry buttons, fallback content), and offline behavior if applicable.]
+
 ## Sprints
 
 ### Sprint 1: [Name]
@@ -97,12 +109,13 @@ Goal: [...]
 6. **Testable criteria.** Every acceptance criterion must be something that can be verified by clicking through the running application or testing the API. The Evaluator tests via Playwright browser automation — it cannot interact with OS-level dialogs (native file pickers, print dialogs) or external services (OAuth providers, email delivery). For features involving these, include API-based verification paths in the acceptance criteria (e.g. "upload endpoint returns 200" alongside "drag-and-drop upload works in UI").
 7. **UX Flow must be concrete.** Describe specific screens, transitions, and interactions — not abstract concepts.
 8. **Think full-stack.** Features that need data persistence, real-time updates, user authentication, or API interactions should be described as such. This is a full application, not a static frontend.
+9. **Production Requirements are mandatory.** Every spec must include the Production Requirements section with responsive design, UI states, and error UX. These are not nice-to-haves. An app without responsive design, loading states, and error handling is not deployable. Be specific: describe what the mobile layout looks like, what the skeleton loading screen shows, what error messages say.
 
 ## Sprint Decomposition Rules
 
-9. **P0 features go in earlier sprints.** Sprint 1 always includes project scaffolding and the core feature that defines the product.
-10. **Each sprint must be independently testable.** The app must run and be usable after each sprint completes. No sprint should leave the app in a broken state.
-11. **Sprints build incrementally.** Later sprints assume all prior sprints are complete and working.
-12. **Respect feature dependencies.** If feature B requires feature A to exist first, A must be in an earlier sprint. Think about data model dependencies, UI prerequisites, and shared infrastructure. For example: a level editor that populates levels with entities requires the entity/sprite system to exist first — don't schedule entity creation after level editing.
-13. **Scale sprints to complexity.** Simple app: 1-2 sprints. Typical app: 2-4 sprints. Complex app: as many sprints as needed — 10+ is fine if the scope demands it.
-14. **Goal must be concrete.** "Dashboard works" is not a goal. "Users see a dashboard with real-time stats, can filter by date range, and data persists after refresh" is a goal.
+10. **P0 features go in earlier sprints.** Sprint 1 always includes project scaffolding and the core feature that defines the product.
+11. **Each sprint must be independently testable.** The app must run and be usable after each sprint completes. No sprint should leave the app in a broken state.
+12. **Sprints build incrementally.** Later sprints assume all prior sprints are complete and working.
+13. **Respect feature dependencies.** If feature B requires feature A to exist first, A must be in an earlier sprint. Think about data model dependencies, UI prerequisites, and shared infrastructure. For example: a level editor that populates levels with entities requires the entity/sprite system to exist first — don't schedule entity creation after level editing.
+14. **Scale sprints to complexity.** Simple app: 1-2 sprints. Typical app: 2-4 sprints. Complex app: as many sprints as needed — 10+ is fine if the scope demands it.
+15. **Goal must be concrete.** "Dashboard works" is not a goal. "Users see a dashboard with real-time stats, can filter by date range, and data persists after refresh" is a goal.
