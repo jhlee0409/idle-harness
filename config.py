@@ -41,6 +41,20 @@ CONFIG = {
     "output_dir": "output",
     "comms_dir": "comms",
 
+    # --- Verifier ---
+    "verifier_enabled": True,
+    "verifier_timeout": 300,            # total 5 min for all checks
+    "verifier_check_timeout": 30,       # per-check timeout
+    "verifier_retry_inconclusive": 1,   # retry count for INCONCLUSIVE results
+    "automation_limited_allowlist": [
+        "file_upload",      # OS native file picker
+        "oauth_redirect",   # third-party OAuth
+        "email_verify",     # email delivery
+        "sms_verify",       # SMS delivery
+        "payment",          # payment provider
+        "maps_embed",       # third-party maps
+    ],
+
     # --- MCP / tools ---
     "mcp_tool": "playwright",
     "mcp_servers": {

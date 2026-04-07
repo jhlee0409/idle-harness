@@ -337,9 +337,10 @@ async def test_retry_stops_on_infra_error():
         async def mock_evaluate(s, cp):
             raise InfraError("JSON message exceeded maximum buffer size of 1048576 bytes")
 
-        with patch.object(orch, "build", side_effect=mock_build):
-            with patch.object(orch, "evaluate", side_effect=mock_evaluate):
-                    passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
+        with patch.object(orch, "build", side_effect=mock_build), \
+             patch.object(orch, "evaluate", side_effect=mock_evaluate), \
+             patch.object(orch, "verify", AsyncMock(return_value=None)):
+            passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
         assert passed is False
         # Should have only attempted ONE build, not max_build_attempts
@@ -369,10 +370,11 @@ async def test_retry_asks_user_on_max_failures_continue():
         mock_build = AsyncMock()
         mock_eval = AsyncMock(return_value=False)  # evaluate returns bool
 
-        with patch.object(orch, "build", mock_build):
-            with patch.object(orch, "evaluate", mock_eval):
-                with patch("orchestrator.input", return_value="c"):  # continue
-                    passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
+        with patch.object(orch, "build", mock_build), \
+             patch.object(orch, "evaluate", mock_eval), \
+             patch.object(orch, "verify", AsyncMock(return_value=None)), \
+             patch("orchestrator.input", return_value="c"):  # continue
+            passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
         assert passed is False
         assert mock_build.call_count == CONFIG["max_build_attempts"]
@@ -399,11 +401,12 @@ async def test_retry_asks_user_on_max_failures_abort():
         mock_build = AsyncMock()
         mock_eval = AsyncMock(return_value=False)  # evaluate returns bool
 
-        with patch.object(orch, "build", mock_build):
-            with patch.object(orch, "evaluate", mock_eval):
-                with patch("orchestrator.input", return_value="a"):  # abort
-                    with pytest.raises(UserAbort):
-                        await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
+        with patch.object(orch, "build", mock_build), \
+             patch.object(orch, "evaluate", mock_eval), \
+             patch.object(orch, "verify", AsyncMock(return_value=None)), \
+             patch("orchestrator.input", return_value="a"):  # abort
+            with pytest.raises(UserAbort):
+                await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
 
 # --- Integration evaluation ---
@@ -532,10 +535,11 @@ async def test_run_simple_generates_criteria():
             eval_called = True
             return True
 
-        with patch.object(orch, "generate_criteria", side_effect=mock_generate_criteria):
-            with patch.object(orch, "build", side_effect=mock_build):
-                with patch.object(orch, "evaluate", side_effect=mock_evaluate):
-                    await orch._run_simple()
+        with patch.object(orch, "generate_criteria", side_effect=mock_generate_criteria), \
+             patch.object(orch, "build", side_effect=mock_build), \
+             patch.object(orch, "evaluate", side_effect=mock_evaluate), \
+             patch.object(orch, "verify", AsyncMock(return_value=None)):
+            await orch._run_simple()
 
         assert criteria_generated
         assert build_called
@@ -650,9 +654,10 @@ async def test_retry_stops_on_timeout():
         async def mock_evaluate(s, cp):
             raise AgentTimeout("Agent timed out after 45m")
 
-        with patch.object(orch, "build", side_effect=mock_build):
-            with patch.object(orch, "evaluate", side_effect=mock_evaluate):
-                    passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
+        with patch.object(orch, "build", side_effect=mock_build), \
+             patch.object(orch, "evaluate", side_effect=mock_evaluate), \
+             patch.object(orch, "verify", AsyncMock(return_value=None)):
+            passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
         assert passed is False
         # Should have only attempted ONE build, not max_build_attempts
@@ -690,3 +695,99 @@ def test_parse_automation_limited_empty():
     limited, total = _parse_automation_limited("No criteria here.")
     assert total == 0
     assert limited == 0
+
+
+# --- Verifier integration ---
+
+@pytest.mark.anyio
+async def test_verifier_fail_skips_evaluate():
+    """When verifier FAILs, evaluate() should NOT be called."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        from verifier import VerificationResult, CheckResult, CheckType, CheckStatus
+        sprint = Sprint(number=1, name="Full Build")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n- [x] API works")
+
+        build_called = False
+        eval_called = False
+
+        async def mock_build(s, cp):
+            nonlocal build_called
+            build_called = True
+
+        async def mock_evaluate(s, cp):
+            nonlocal eval_called
+            eval_called = True
+            return True
+
+        # Verifier returns FAIL
+        vresult = VerificationResult(
+            failed=[CheckResult("API broken", CheckType.API, CheckStatus.FAIL, message="500")],
+        )
+
+        async def mock_verify(s, cp):
+            return vresult
+
+        with patch.object(orch, "build", side_effect=mock_build), \
+             patch.object(orch, "evaluate", side_effect=mock_evaluate), \
+             patch.object(orch, "verify", side_effect=mock_verify), \
+             patch.dict("config.CONFIG", {"max_build_attempts": 1}), \
+             patch("orchestrator._ask_user_continue"):
+            await orch._retry_build_eval(sprint, contract_path, "Build")
+
+        assert build_called
+        assert not eval_called  # evaluate should NOT have been called
+
+
+@pytest.mark.anyio
+async def test_verifier_pass_proceeds_to_evaluate():
+    """When verifier PASSes, evaluate() should be called."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        from verifier import VerificationResult
+        sprint = Sprint(number=1, name="Full Build")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n- [x] API works")
+
+        eval_called = False
+
+        async def mock_build(s, cp):
+            pass
+
+        async def mock_evaluate(s, cp):
+            nonlocal eval_called
+            eval_called = True
+            return True
+
+        # Verifier returns PASS (no failures)
+        vresult = VerificationResult(overall_pass=True)
+
+        async def mock_verify(s, cp):
+            return vresult
+
+        with patch.object(orch, "build", side_effect=mock_build), \
+             patch.object(orch, "evaluate", side_effect=mock_evaluate), \
+             patch.object(orch, "verify", side_effect=mock_verify):
+            passed = await orch._retry_build_eval(sprint, contract_path, "Build")
+
+        assert eval_called
+        assert passed

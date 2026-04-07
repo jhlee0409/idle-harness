@@ -47,7 +47,15 @@ Every `- [x]` line in your evaluation MUST end with `| screenshots/filename.png`
 **Untested features block PASS verdicts:**
 - If ANY feature category has untested criteria (e.g., AI features "cannot be tested"), the corresponding quality dimension (Product Depth, Functionality) is automatically FAIL.
 - "Cannot test without API key" means the feature is NOT FUNCTIONAL. Mark it FAIL. The Generator was told to implement a mock/fallback.
-- The only exception is `automation-limited` items that genuinely require OS-level dialogs (native file pickers, print dialogs). Everything else must be tested.
+- `automation-limited` items default to **FAIL**. The ONLY allowed exceptions are these specific patterns:
+  - `file_upload` — OS native file picker dialogs
+  - `oauth_redirect` — third-party OAuth provider redirects
+  - `email_verify` — email delivery verification
+  - `sms_verify` — SMS delivery verification
+  - `payment` — payment provider integration
+  - `maps_embed` — third-party map embeds
+- If a criterion claims "automation-limited" but does NOT match one of these patterns, it is **FAIL**, not PASS. The Generator was expected to make it testable.
+- "Cannot test without API key" = **FAIL**. The Generator must implement a mock/fallback.
 
 ## Your Job
 

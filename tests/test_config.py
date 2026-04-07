@@ -74,6 +74,19 @@ def test_resolve_mode_explicit_overrides_auto():
         assert resolve_mode() == "full"
 
 
+def test_config_has_verifier_keys():
+    for key in ("verifier_enabled", "verifier_timeout", "verifier_check_timeout",
+                "verifier_retry_inconclusive", "automation_limited_allowlist"):
+        assert key in CONFIG, f"Missing config key: {key}"
+
+
+def test_automation_limited_allowlist_defaults():
+    allowlist = CONFIG["automation_limited_allowlist"]
+    assert "file_upload" in allowlist
+    assert "oauth_redirect" in allowlist
+    assert isinstance(allowlist, list)
+
+
 def test_config_has_per_agent_model_keys():
     for key in ("model_planner", "model_evaluator", "model_generator"):
         assert key in CONFIG, f"Missing config key: {key}"

@@ -16,6 +16,10 @@ from config import (
 from sprint import Sprint, parse_sprints
 from state import HarnessState
 from server import DevServer
+from verifier import (
+    classify_criteria, run_verification, backup_db, restore_db,
+    VerificationResult,
+)
 
 
 def _check_verdict_pass(text: str) -> bool:
@@ -584,13 +588,77 @@ class Orchestrator:
             _print_required_changes(eval_result.result)
         return passed
 
+    async def verify(self, sprint: Sprint, contract_path: str) -> VerificationResult | None:
+        """Run deterministic verification on the built app.
+
+        Returns VerificationResult, or None if verifier is disabled.
+        On FAIL, writes feedback to evaluation.md so Generator sees it on retry.
+        """
+        if not CONFIG.get("verifier_enabled", False):
+            return None
+
+        # Use cached contract
+        if contract_path not in self._cached_contracts:
+            self._cached_contracts[contract_path] = _read_file(contract_path)
+        contract = self._cached_contracts[contract_path]
+
+        sprint_dir = self._sprint_dir(sprint)
+        artifacts_dir = os.path.join(sprint_dir, "verifier_artifacts")
+        label = self._sprint_label(sprint)
+
+        _log("Verifier", f"{label} — Classifying criteria...")
+        typed_checks = await classify_criteria(contract, self.root)
+        deterministic = [c for c in typed_checks if c.check_type.value != "subjective"]
+        subjective = [c for c in typed_checks if c.check_type.value == "subjective"]
+        _log("Verifier", f"{label} — {len(deterministic)} deterministic + {len(subjective)} subjective criteria")
+
+        # Backup DB before verification (state reset)
+        db_backup = backup_db(self.output_dir)
+
+        _log("Verifier", f"{label} — Starting servers...")
+        self.server.start()
+        try:
+            _log("Verifier", f"{label} — Running deterministic checks...")
+            start = time.time()
+            vresult = await run_verification(
+                typed_checks, CONFIG["dev_server_url"],
+                self.output_dir, artifacts_dir,
+            )
+            elapsed = int(time.time() - start)
+
+            if vresult.overall_pass:
+                _log("Verifier", f"{label} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} "
+                     f"({len(vresult.passed)} passed, {len(vresult.subjective)} subjective, {elapsed}s)")
+            else:
+                _log("Verifier", f"{label} — {_C.RED}{_C.BOLD}FAIL{_C.RESET} "
+                     f"({len(vresult.failed)} failed, {len(vresult.passed)} passed, {elapsed}s)")
+                # Write feedback for Generator
+                eval_path = os.path.join(sprint_dir, "evaluation.md")
+                with open(eval_path, "w") as f:
+                    f.write(vresult.feedback_text())
+        finally:
+            _log("Verifier", f"{label} — Stopping servers...")
+            self.server.stop()
+            # Restore DB after verification (clean state for Evaluator)
+            if db_backup:
+                restore_db(self.output_dir, db_backup)
+
+        return vresult
+
     async def _retry_build_eval(self, sprint: Sprint, contract_path: str, label: str):
         """Shared retry loop for both full and simple modes."""
         sprint_passed = False
         for attempt in range(CONFIG["max_build_attempts"]):
             try:
                 await self.build(sprint, contract_path)
-                passed = await self.evaluate(sprint, contract_path)
+
+                # Verifier: deterministic checks before expensive LLM eval
+                vresult = await self.verify(sprint, contract_path)
+                if vresult is not None and not vresult.overall_pass:
+                    _log("Harness", f"{label} — Verifier FAIL, skipping Evaluator (saving time + cost)")
+                    passed = False
+                else:
+                    passed = await self.evaluate(sprint, contract_path)
             except InfraError as exc:
                 _log("Harness", f"{label} attempt {attempt + 1} INFRA ERROR: {exc}")
                 _log("Harness", f"Infrastructure error — rebuilding won't help. Stopping retries for {label}.")
