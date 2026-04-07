@@ -9,7 +9,12 @@ CONFIG = {
     "mode": "auto",
 
     # --- Model ---
+    # Default model (used when per-agent model is not set)
     "model": "claude-opus-4-6",
+    # Per-agent models: None = use default "model" above
+    "model_planner": "claude-sonnet-4-6",
+    "model_evaluator": "claude-sonnet-4-6",
+    "model_generator": None,  # None → falls back to "model" (opus)
 
     # --- Build / eval limits ---
     "max_build_attempts": 10,
@@ -78,6 +83,17 @@ def resolve_mode() -> str:
         return "full"
     # Sonnet and others: default to simple (adequate for most apps)
     return "simple"
+
+
+def resolve_agent_model(role: str) -> str:
+    """Resolve the model for a given agent role (planner/generator/evaluator).
+
+    Per-agent model keys override the default. None or missing → default model.
+    """
+    per_agent = CONFIG.get(f"model_{role}")
+    if per_agent:
+        return per_agent
+    return CONFIG.get("model", "claude-opus-4-6")
 
 
 def get_server_ports() -> list[int]:

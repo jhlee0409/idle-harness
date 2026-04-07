@@ -66,12 +66,14 @@ async def call_agent(
     resume: str | None = None,
     disallowed_tools: list[str] | None = None,
     timeout: int = 0,
+    model: str | None = None,
 ) -> AgentResult:
     """Call a Claude agent. Pass resume=session_id to continue a previous session.
 
     mcp_servers: SDK-managed MCP servers (launched automatically, no user setup needed).
                  Example: {"playwright": {"command": "npx", "args": ["@anthropic-ai/mcp-server-playwright"]}}
     timeout: Wall-clock timeout in seconds. 0 = no limit. Raises AgentTimeout on expiry.
+    model: Override model for this call. None = use CONFIG["model"].
     """
     tools = list(allowed_tools)
 
@@ -87,7 +89,7 @@ async def call_agent(
         allowed_tools=tools,
         system_prompt=system_prompt,
         permission_mode="bypassPermissions",
-        model=CONFIG.get("model", "claude-opus-4-6"),
+        model=model or CONFIG.get("model", "claude-opus-4-6"),
         max_buffer_size=10 * 1024 * 1024,  # 10MB — allows screenshot responses
         stderr=_capture_stderr,
     )

@@ -11,7 +11,7 @@ from cli import call_agent, AgentError, AgentTimeout, InfraError, fmt_tokens, fm
 from config import (
     CONFIG, CONTRACT_AGREED,
     TOOLS_READ_WRITE, TOOLS_FULL, TOOLS_EVALUATOR,
-    get_harness_root, resolve_mode,
+    get_harness_root, resolve_mode, resolve_agent_model,
 )
 from sprint import Sprint, parse_sprints
 from state import HarnessState
@@ -210,6 +210,7 @@ class Orchestrator:
             allowed_tools=TOOLS_READ_WRITE,
             cwd=self.root,
             timeout=CONFIG["agent_timeout_planner"],
+            model=resolve_agent_model("planner"),
         )
         self._track_cost(agent_result, "planner")
 
@@ -253,6 +254,7 @@ class Orchestrator:
             allowed_tools=TOOLS_EVALUATOR,
             cwd=self.root,
             timeout=CONFIG["agent_timeout_criteria"],
+            model=resolve_agent_model("evaluator"),
         )
         self._track_cost(agent_result, "criteria")
 
@@ -307,6 +309,7 @@ class Orchestrator:
                 allowed_tools=TOOLS_READ_WRITE,
                 cwd=self.root,
                 timeout=CONFIG["agent_timeout_negotiate"],
+                model=resolve_agent_model("generator"),
             )
             self._track_cost(gen_result, "negotiate")
 
@@ -326,6 +329,7 @@ class Orchestrator:
                 allowed_tools=TOOLS_EVALUATOR,
                 cwd=self.root,
                 timeout=CONFIG["agent_timeout_negotiate"],
+                model=resolve_agent_model("evaluator"),
             )
             self._track_cost(eval_result, "negotiate")
 
@@ -458,6 +462,7 @@ class Orchestrator:
                 max_turns=CONFIG["generator_max_turns"],
                 resume=self._generator_session_id,
                 timeout=CONFIG["agent_timeout_build"],
+                model=resolve_agent_model("generator"),
             )
         except AgentError:
             # Reset conversation — crashed session can't be resumed
@@ -544,6 +549,7 @@ class Orchestrator:
                 mcp_servers=CONFIG.get("mcp_servers"),
                 cwd=self.root,
                 timeout=CONFIG["agent_timeout_eval"],
+                model=resolve_agent_model("evaluator"),
             )
             self._track_cost(eval_result, "eval")
 
@@ -620,7 +626,13 @@ class Orchestrator:
         total_start = time.time()
 
         self._mode = resolve_mode()
-        _log("Harness", f"Mode: {self._mode} (model: {CONFIG.get('model', 'unknown')})")
+        gen_model = resolve_agent_model("generator")
+        eval_model = resolve_agent_model("evaluator")
+        plan_model = resolve_agent_model("planner")
+        if gen_model == eval_model == plan_model:
+            _log("Harness", f"Mode: {self._mode} (model: {gen_model})")
+        else:
+            _log("Harness", f"Mode: {self._mode} (generator: {gen_model}, evaluator: {eval_model}, planner: {plan_model})")
 
         self.setup()
         try:
@@ -716,6 +728,7 @@ class Orchestrator:
                     mcp_servers=CONFIG.get("mcp_servers"),
                     cwd=self.root,
                     timeout=CONFIG["agent_timeout_integration"],
+                    model=resolve_agent_model("evaluator"),
                 )
                 self._track_cost(eval_result, "integration_eval")
 
@@ -763,6 +776,7 @@ class Orchestrator:
                         max_turns=CONFIG["generator_max_turns"],
                         resume=self._generator_session_id,
                         timeout=CONFIG["agent_timeout_build"],
+                        model=resolve_agent_model("generator"),
                     )
                     if fix_result.session_id:
                         self._generator_session_id = fix_result.session_id
@@ -844,6 +858,7 @@ class Orchestrator:
                     max_turns=CONFIG["generator_max_turns"],
                     resume=self._generator_session_id,
                     timeout=CONFIG["agent_timeout_build"],
+                    model=resolve_agent_model("generator"),
                 )
                 if fix_result.session_id:
                     self._generator_session_id = fix_result.session_id
@@ -888,6 +903,7 @@ class Orchestrator:
                     mcp_servers=CONFIG.get("mcp_servers"),
                     cwd=self.root,
                     timeout=CONFIG["agent_timeout_eval"],
+                    model=resolve_agent_model("evaluator"),
                 )
                 self._track_cost(eval_result, "design_eval")
                 with open(eval_path, "w") as f:
