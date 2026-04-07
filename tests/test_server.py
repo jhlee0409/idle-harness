@@ -78,3 +78,53 @@ def test_health_check_raises_on_timeout():
         import pytest
         with pytest.raises(RuntimeError, match="not ready"):
             server._wait_until_ready()
+
+
+def test_start_fullstack_pip_install_failure():
+    """pip install failure in _start_fullstack should raise RuntimeError."""
+    import pytest
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend_dir = os.path.join(tmpdir, "backend")
+        frontend_dir = os.path.join(tmpdir, "frontend")
+        os.makedirs(backend_dir)
+        os.makedirs(frontend_dir)
+        with open(os.path.join(backend_dir, "requirements.txt"), "w") as f:
+            f.write("nonexistent-package-xyz\n")
+        with open(os.path.join(backend_dir, "main.py"), "w") as f:
+            f.write("app = None")
+        with open(os.path.join(frontend_dir, "package.json"), "w") as f:
+            json.dump({"scripts": {"dev": "vite"}}, f)
+
+        server = DevServer(comms_dir=tmpdir, output_dir=tmpdir)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "ERROR: No matching distribution found"
+
+        with patch("subprocess.run", return_value=mock_result):
+            with pytest.raises(RuntimeError, match="pip install failed"):
+                server._start_fullstack()
+
+
+def test_start_fullstack_npm_install_failure():
+    """npm install failure in _start_fullstack should raise RuntimeError."""
+    import pytest
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend_dir = os.path.join(tmpdir, "backend")
+        frontend_dir = os.path.join(tmpdir, "frontend")
+        os.makedirs(backend_dir)
+        os.makedirs(frontend_dir)
+        with open(os.path.join(backend_dir, "main.py"), "w") as f:
+            f.write("app = None")
+        with open(os.path.join(frontend_dir, "package.json"), "w") as f:
+            json.dump({"scripts": {"dev": "vite"}}, f)
+
+        server = DevServer(comms_dir=tmpdir, output_dir=tmpdir)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "npm ERR! code ERESOLVE"
+
+        with patch("subprocess.run", return_value=mock_result):
+            with pytest.raises(RuntimeError, match="npm install failed"):
+                server._start_fullstack()

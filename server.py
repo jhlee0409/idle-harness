@@ -107,17 +107,27 @@ class DevServer:
 
         req = os.path.join(backend_dir, "requirements.txt")
         if os.path.exists(req):
-            subprocess.run(
+            result = subprocess.run(
                 "pip3 install -r requirements.txt",
                 shell=True, cwd=backend_dir,
-                capture_output=True,
+                capture_output=True, text=True,
             )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"pip install failed in backend/ (exit {result.returncode}): "
+                    f"{result.stderr[:500]}"
+                )
         if not os.path.isdir(os.path.join(frontend_dir, "node_modules")):
-            subprocess.run(
+            result = subprocess.run(
                 "npm install",
                 shell=True, cwd=frontend_dir,
-                capture_output=True,
+                capture_output=True, text=True,
             )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"npm install failed in frontend/ (exit {result.returncode}): "
+                    f"{result.stderr[:500]}"
+                )
 
         self._spawn("python3 -m uvicorn main:app --reload --port 8000", backend_dir)
         self._spawn("npm run dev", frontend_dir)
