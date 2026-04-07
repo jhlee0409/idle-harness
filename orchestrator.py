@@ -1671,6 +1671,47 @@ def _cmd_clean(clean_all: bool = False):
     print()
 
 
+def _cmd_verify():
+    """Run deterministic verifier on the last build without rebuilding."""
+    harness_root = get_harness_root()
+    orch = Orchestrator(root_dir=harness_root)
+
+    if not os.path.exists(orch.spec_path):
+        print(f"{_C.RED}No spec found. Run the harness first.{_C.RESET}")
+        sys.exit(1)
+
+    orch._spec = _read_file(orch.spec_path)
+    orch._init_output()
+
+    sprint = Sprint(number=1, name="Full Build")
+    sprint_dir = orch._sprint_dir(sprint)
+    contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+    if not os.path.exists(contract_path):
+        print(f"{_C.RED}No contract found at {contract_path}. Run the harness first.{_C.RESET}")
+        sys.exit(1)
+
+    async def _run():
+        _log("Harness", "=== Verify-only mode ===")
+        vresult = await orch.verify(sprint, contract_path)
+        if vresult is None:
+            _log("Harness", "Verifier is disabled in config.")
+            return
+        if vresult.overall_pass:
+            _log("Harness", f"{_C.GREEN}PASS{_C.RESET} — {len(vresult.passed)} deterministic checks passed, "
+                 f"{len(vresult.subjective)} subjective deferred")
+        else:
+            _log("Harness", f"{_C.RED}FAIL{_C.RESET} — {len(vresult.failed)} failed, "
+                 f"{len(vresult.passed)} passed")
+            for r in vresult.failed:
+                _log("Verifier", f"  FAIL: [{r.check_type.value}] {r.criterion}")
+                if r.message:
+                    _log("Verifier", f"        {r.message}")
+
+    _preflight()
+    anyio.run(_run)
+    _log_close()
+
+
 def _cmd_eval():
     """Re-evaluate the last build without rebuilding. Uses existing comms/ and output/."""
     harness_root = get_harness_root()
@@ -1785,6 +1826,10 @@ def main():
         _cmd_clean(clean_all)
         return
 
+    if cmd == "verify":
+        _cmd_verify()
+        return
+
     if cmd == "eval":
         _cmd_eval()
         return
@@ -1814,6 +1859,7 @@ def main():
         print(f"  python orchestrator.py plan \"idea\"         Plan only — generate spec")
         print(f"  python orchestrator.py criteria            Generate criteria from existing spec")
         print(f"  python orchestrator.py build               Build from existing spec + criteria")
+        print(f"  python orchestrator.py verify              Deterministic verification (no LLM eval)")
         print(f"  python orchestrator.py eval                Evaluate existing build (no rebuild)")
         print()
         print(f"  {_C.BOLD}Utilities:{_C.RESET}")

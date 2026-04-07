@@ -82,15 +82,33 @@ class VerificationResult:
 
 # --- Criteria Classification ---
 
-_CLASSIFY_PROMPT = """Classify each testable criterion into one of these types:
-- api: Tests an API endpoint (HTTP request, status code, response body)
-- css: Tests a CSS property (color, font, border-radius, shadow)
-- ui: Tests UI element existence or interaction (button, form, navigation)
-- responsive: Tests responsive behavior (viewport width, mobile layout)
-- build: Tests build/compilation (npm build, python import)
-- persistence: Tests data persistence (create, refresh, verify)
-- perf: Tests performance (response time, load time)
-- subjective: Design quality, originality, aesthetic judgment — cannot be verified deterministically
+_CLASSIFY_PROMPT = """Classify each testable criterion into one of these types.
+IMPORTANT: Be AGGRESSIVE about classifying as deterministic. Only use "subjective" for
+things that truly require human aesthetic judgment (originality, cohesion, design feel).
+
+Types:
+- api: Mentions API endpoints, HTTP requests, status codes, response data, /api/ paths
+- css: Mentions specific CSS values: hex colors (#0F0F0F), px sizes, font-family names,
+  border-radius, opacity, background-color, shadows. If it has a # hex code or px value, it's css.
+- ui: Tests element existence, button clicks, navigation, form submissions, page transitions
+- responsive: Mentions viewport widths (375px, 768px, 1440px), mobile, tablet, hamburger menu
+- build: Tests compilation, npm build, imports, server startup
+- persistence: Tests that data survives page refresh, database storage
+- perf: Tests speed, response time, load time
+- subjective: ONLY for aesthetic judgment that CANNOT be measured: "feels cohesive",
+  "design is original", "app has character". If ANY concrete metric exists (a color value,
+  a size, a specific element), it is NOT subjective.
+
+EXAMPLES:
+- "Background is #0F0F0F" → css (has hex color)
+- "Recipe titles in Fraunces serif" → css (has font-family name)
+- "Cards have 0px border-radius" → css (has px value)
+- "375px: hamburger menu visible" → responsive (has viewport width)
+- "API returns list of recipes" → api (mentions API)
+- "Data persists after refresh" → persistence
+- "Design feels cohesive and editorial" → subjective (no concrete metric)
+- "Heart icon on recipe card" → ui (element existence)
+- "Search results update after typing" → ui (interaction)
 
 For each criterion, output a JSON object with:
   {"criterion": "original text", "type": "api|css|ui|responsive|build|persistence|perf|subjective", "details": {...}}
@@ -140,7 +158,7 @@ async def classify_criteria(criteria_text: str, cwd: str) -> list[TypedCheck]:
             user_prompt=prompt,
             allowed_tools=[],
             cwd=cwd,
-            timeout=60,
+            timeout=300,  # 5 min — 162 criteria generates a large JSON array
             model=CONFIG.get("model", "claude-opus-4-6"),
         )
 
