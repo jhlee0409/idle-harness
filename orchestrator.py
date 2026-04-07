@@ -1567,7 +1567,8 @@ def _cmd_clean(clean_all: bool = False):
         cleaned.append("comms/")
 
     if clean_all and os.path.isdir(output_base):
-        shutil.rmtree(output_base)
+        # Force remove — output/ contains git repos with locked .git dirs
+        subprocess.run(["rm", "-rf", output_base], capture_output=True)
         cleaned.append("output/")
 
     if cleaned:
