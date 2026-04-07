@@ -272,6 +272,8 @@ class Orchestrator:
             )
         elapsed_s = int(time.time() - start)
         _log("Evaluator", f"Generated {criteria_count} testable criteria. ({_fmt_stats(agent_result, start)})")
+        # Save criteria generation response for analysis
+        _save_agent_response(self.comms_dir, "criteria_response.md", agent_result.result)
         return criteria_path
 
     async def negotiate_contract(self, sprint: Sprint) -> str:
@@ -469,6 +471,13 @@ class Orchestrator:
         self.state.add_sprint_timing(sprint.number, "build", elapsed)
         _log("Generator", f"{label} — Build complete. ({_fmt_stats(agent_result, start)})")
         _print_build_summary(self.output_dir)
+        # Save Generator response for post-run analysis
+        attempt = self.state.get_sprint_attempt(sprint.number, "build")
+        _save_agent_response(
+            self._sprint_dir(sprint),
+            f"generator_response_build_{attempt}.md",
+            agent_result.result,
+        )
 
         # Log Generator self-eval (informational — Evaluator is the real gate)
         self_eval_path = os.path.join(self._sprint_dir(sprint), "self_eval.md")
@@ -625,12 +634,12 @@ class Orchestrator:
             _log("Harness", "Aborted by user.")
         except (AgentError, RuntimeError) as exc:
             _log("Harness", f"Fatal error: {exc}")
-
-        self.state.set_phase("completed")
-        if self.output_dir:
-            self._print_report(total_start)
-            self._archive_comms()
-        _log_close()
+        finally:
+            self.state.set_phase("completed")
+            if self.output_dir:
+                self._print_report(total_start)
+                self._archive_comms()
+            _log_close()
 
     async def _run_full(self):
         run_start = time.time()
@@ -759,6 +768,9 @@ class Orchestrator:
                         self._generator_session_id = fix_result.session_id
                     self._track_cost(fix_result, "integration_fix")
                     _log("Generator", f"Integration fix complete. ({_fmt_stats(fix_result, fix_start)})")
+                    _save_agent_response(
+                        self.comms_dir, f"integration_fix_{attempt}.md", fix_result.result,
+                    )
                 except AgentTimeout as exc:
                     self._generator_session_id = None
                     _log("Harness", f"Integration fix TIMEOUT: {exc}")
@@ -837,6 +849,11 @@ class Orchestrator:
                     self._generator_session_id = fix_result.session_id
                 self._track_cost(fix_result, "design_refinement")
                 _log("Generator", f"Design iteration {iteration} complete. ({_fmt_stats(fix_result, fix_start)})")
+                _save_agent_response(
+                    self._sprint_dir(sprint),
+                    f"generator_response_design_{iteration}.md",
+                    fix_result.result,
+                )
             except AgentTimeout as exc:
                 self._generator_session_id = None
                 _log("Harness", f"Design iteration {iteration} TIMEOUT: {exc}")
@@ -1248,11 +1265,20 @@ def _log(agent: str, msg: str):
     color = _AGENT_COLORS.get(agent, "")
     print(f"{color}{_C.BOLD}[{agent}]{_C.RESET} {msg}")
     if _log_file:
-        ts = time.strftime("%H:%M:%S")
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
         # Strip ANSI codes for file output
         clean = re.sub(r"\033\[[0-9;]*m", "", msg)
         _log_file.write(f"[{ts}] [{agent}] {clean}\n")
         _log_file.flush()
+
+
+def _save_agent_response(directory: str, filename: str, text: str):
+    """Save an agent's full response text for post-run analysis."""
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, filename)
+    with open(path, "w") as f:
+        f.write(text)
+    _log("Harness", f"Agent response saved to {os.path.relpath(path)}")
 
 
 def _elapsed(start: float) -> str:
