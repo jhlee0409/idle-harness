@@ -3,10 +3,10 @@ from urllib.parse import urlparse
 
 CONFIG = {
     # --- Harness mode ---
-    # "simple": single build + single evaluation (recommended for Opus 4.6 / 1M context)
-    # "full": sprint decomposition + contract negotiation + multi-eval
-    #         (use for smaller models or <200k context where single-pass build is unreliable)
-    "mode": "simple",
+    # "auto": select based on model (opus/sonnet → simple, haiku → full)
+    # "simple": single build + single evaluation (high-capability models, large context)
+    # "full": sprint decomposition + contract negotiation (smaller models, limited context)
+    "mode": "auto",
 
     # --- Model ---
     "model": "claude-opus-4-6",
@@ -62,6 +62,22 @@ _HARNESS_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 def get_harness_root() -> str:
     return _HARNESS_ROOT
+
+
+def resolve_mode() -> str:
+    """Resolve harness mode. 'auto' selects based on model capability."""
+    mode = CONFIG["mode"]
+    if mode != "auto":
+        return mode
+    model = CONFIG.get("model", "")
+    # Opus: 1M context, high capability → single-pass build
+    if "opus" in model:
+        return "simple"
+    # Haiku: smaller context, lower capability → sprint decomposition
+    if "haiku" in model:
+        return "full"
+    # Sonnet and others: default to simple (adequate for most apps)
+    return "simple"
 
 
 def get_server_ports() -> list[int]:

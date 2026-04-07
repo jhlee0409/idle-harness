@@ -11,7 +11,7 @@ from cli import call_agent, AgentError, AgentTimeout, InfraError, fmt_tokens, fm
 from config import (
     CONFIG, CONTRACT_AGREED,
     TOOLS_READ_WRITE, TOOLS_FULL, TOOLS_EVALUATOR,
-    get_harness_root,
+    get_harness_root, resolve_mode,
 )
 from sprint import Sprint, parse_sprints
 from state import HarnessState
@@ -610,11 +610,14 @@ class Orchestrator:
         print("=" * 60)
         total_start = time.time()
 
+        self._mode = resolve_mode()
+        _log("Harness", f"Mode: {self._mode} (model: {CONFIG.get('model', 'unknown')})")
+
         self.setup()
         try:
             await self.plan(user_prompt)
 
-            if CONFIG["mode"] == "simple":
+            if self._mode == "simple":
                 await self._run_simple()
             else:
                 await self._run_full()
@@ -935,7 +938,7 @@ class Orchestrator:
         print("  FINAL REPORT")
         print("=" * 60)
         print(f"  Project:        {self.output_dir}")
-        print(f"  Mode:           {CONFIG['mode']}")
+        print(f"  Mode:           {self._mode}")
         print(f"  Sprints:        {status.get('total_sprints', 1)}")
         print(f"  Build attempts: {self.state.total('build', status)}")
         print(f"  Eval attempts:  {self.state.total('eval', status)}")
@@ -955,7 +958,7 @@ class Orchestrator:
             icon = f"{color}{_C.BOLD}{'PASS' if passed else 'FAIL'}{_C.RESET}"
             if num == 0:
                 label = "Integration"
-            elif CONFIG["mode"] == "simple":
+            elif self._mode == "simple":
                 label = "Build"
             else:
                 label = f"Sprint {num}"

@@ -1,4 +1,4 @@
-from config import CONFIG, CONTRACT_AGREED, TOOLS_READ_WRITE, TOOLS_FULL, TOOLS_EVALUATOR, get_server_ports
+from config import CONFIG, CONTRACT_AGREED, TOOLS_READ_WRITE, TOOLS_FULL, TOOLS_EVALUATOR, get_server_ports, resolve_mode
 
 
 def test_config_has_required_keys():
@@ -22,7 +22,7 @@ def test_config_has_required_keys():
 
 
 def test_config_defaults():
-    assert CONFIG["mode"] == "simple"
+    assert CONFIG["mode"] == "auto"
     assert CONFIG["max_build_attempts"] == 10
     assert CONFIG["max_negotiation_rounds"] == 3
     assert CONFIG["generator_max_turns"] == 200
@@ -48,6 +48,30 @@ def test_tools_evaluator_no_read():
     """Evaluator must NOT have Read tool — GAN principle prevents source code access."""
     assert "Read" not in TOOLS_EVALUATOR
     assert "Write" in TOOLS_EVALUATOR
+
+
+def test_resolve_mode_auto_opus():
+    from unittest.mock import patch
+    with patch.dict("config.CONFIG", {"mode": "auto", "model": "claude-opus-4-6"}):
+        assert resolve_mode() == "simple"
+
+
+def test_resolve_mode_auto_haiku():
+    from unittest.mock import patch
+    with patch.dict("config.CONFIG", {"mode": "auto", "model": "claude-haiku-4-5-20251001"}):
+        assert resolve_mode() == "full"
+
+
+def test_resolve_mode_auto_sonnet():
+    from unittest.mock import patch
+    with patch.dict("config.CONFIG", {"mode": "auto", "model": "claude-sonnet-4-6"}):
+        assert resolve_mode() == "simple"
+
+
+def test_resolve_mode_explicit_overrides_auto():
+    from unittest.mock import patch
+    with patch.dict("config.CONFIG", {"mode": "full", "model": "claude-opus-4-6"}):
+        assert resolve_mode() == "full"
 
 
 def test_get_server_ports():
