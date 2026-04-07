@@ -281,6 +281,37 @@ done
 
 ---
 
+### Experiment B: Opus Evaluator + 강화된 프롬프트 (2026-04-08)
+
+대상 빌드: `mise-en-place-a-recipe-sharing-platform` (동일 빌드)
+목적: 아티클 원칙 검증 — Verifier 미들웨어 없이 Evaluator만으로 품질 보장 가능한지
+
+| 항목 | 이전 Opus (eval 4, PASS) | Sonnet (PASS) | **이번 Opus (FAIL)** |
+|---|---|---|---|
+| Verdict | PASS | PASS (크래시) | **FAIL** |
+| Banned phrases | 미측정 | 12건 | **0건** |
+| Feature pass rate | 미측정 | 148/155 (95.5%) | **89/111 (80.2%)** |
+| AI stub 판정 | PASS | PASS | **FAIL** |
+| 시간 | 35m 14s | 39m (크래시) | **47m 9s** |
+| Turns | 188 | 390 | **322** |
+| 비용 | $18.99 | 미측정 | **$16.95** |
+
+감지된 문제 6개 (이전 PASS에서 놓친 것들):
+1. 허브 그린 dietary tags 누락
+2. 쿠킹 모드 재료 패널 누락
+3. 노이즈 텍스처 오버레이 누락
+4. 폼 submit 로딩 상태 누락
+5. AI 어시스턴트 미완성
+6. 빈 상태 페이지 누락
+
+**결론: 아티클 원칙이 맞다.**
+- Opus + 엄격한 프롬프트 = banned phrases 0건, AI stub FAIL 감지
+- 같은 앱이 이전엔 PASS, 이제는 80.2%로 FAIL → 프롬프트 품질이 핵심
+- Verifier 미들웨어 불필요. `verifier_enabled: False`로 비활성화.
+- Evaluator 프롬프트 반복 개선이 가장 높은 레버리지.
+
+---
+
 ## 실행 우선순위
 
 | 순위 | 실험 | 이유 | 예상 비용 |
