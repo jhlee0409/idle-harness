@@ -1587,6 +1587,102 @@ def _cmd_clean(clean_all: bool = False):
     print()
 
 
+def _cmd_eval():
+    """Re-evaluate the last build without rebuilding. Uses existing comms/ and output/."""
+    harness_root = get_harness_root()
+    orch = Orchestrator(root_dir=harness_root)
+
+    # Restore state from existing artifacts
+    if not os.path.exists(orch.spec_path):
+        print(f"{_C.RED}No spec found. Run the harness first.{_C.RESET}")
+        sys.exit(1)
+
+    orch._spec = _read_file(orch.spec_path)
+    orch._init_output()
+
+    sprint = Sprint(number=1, name="Full Build")
+    sprint_dir = orch._sprint_dir(sprint)
+    contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+    if not os.path.exists(contract_path):
+        print(f"{_C.RED}No contract found at {contract_path}. Run the harness first.{_C.RESET}")
+        sys.exit(1)
+
+    async def _run():
+        _log("Harness", "=== Eval-only mode ===")
+        passed = await orch.evaluate(sprint, contract_path)
+        icon = f"{_C.GREEN}PASS{_C.RESET}" if passed else f"{_C.RED}FAIL{_C.RESET}"
+        _log("Harness", f"Result: {icon}")
+
+    _preflight()
+    anyio.run(_run)
+    _log_close()
+
+
+def _cmd_build():
+    """Re-build from existing spec and criteria without re-planning."""
+    harness_root = get_harness_root()
+    orch = Orchestrator(root_dir=harness_root)
+
+    if not os.path.exists(orch.spec_path):
+        print(f"{_C.RED}No spec found. Run the harness first.{_C.RESET}")
+        sys.exit(1)
+
+    orch._spec = _read_file(orch.spec_path)
+    orch._init_output()
+
+    sprint = Sprint(number=1, name="Full Build")
+    sprint_dir = orch._sprint_dir(sprint)
+    contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+    if not os.path.exists(contract_path):
+        print(f"{_C.RED}No contract found. Run the harness first.{_C.RESET}")
+        sys.exit(1)
+
+    async def _run():
+        _log("Harness", "=== Build-only mode ===")
+        await orch.build(sprint, contract_path)
+
+    _preflight()
+    anyio.run(_run)
+    _log_close()
+
+
+def _cmd_criteria():
+    """Re-generate testable criteria from existing spec."""
+    harness_root = get_harness_root()
+    orch = Orchestrator(root_dir=harness_root)
+
+    if not os.path.exists(orch.spec_path):
+        print(f"{_C.RED}No spec found. Run the harness first or use 'plan' first.{_C.RESET}")
+        sys.exit(1)
+
+    orch._spec = _read_file(orch.spec_path)
+    orch._init_output()
+
+    async def _run():
+        _log("Harness", "=== Criteria-only mode ===")
+        criteria_path = await orch.generate_criteria()
+        _log("Harness", f"Criteria written to {criteria_path}")
+
+    _preflight()
+    anyio.run(_run)
+    _log_close()
+
+
+def _cmd_plan(user_prompt: str):
+    """Run planner only — generate spec from prompt."""
+    harness_root = get_harness_root()
+    orch = Orchestrator(root_dir=harness_root)
+    orch.setup()
+
+    async def _run():
+        await orch.plan(user_prompt)
+        _log("Harness", f"Spec written to {orch.spec_path}")
+
+    _preflight()
+    anyio.run(_run)
+    _log_close()
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) >= 2 else ""
 
@@ -1605,10 +1701,38 @@ def main():
         _cmd_clean(clean_all)
         return
 
+    if cmd == "eval":
+        _cmd_eval()
+        return
+
+    if cmd == "build":
+        _cmd_build()
+        return
+
+    if cmd == "criteria":
+        _cmd_criteria()
+        return
+
+    if cmd == "plan":
+        user_prompt = " ".join(sys.argv[2:])
+        if not user_prompt:
+            print(f"{_C.RED}Usage: python orchestrator.py plan \"your app idea\"{_C.RESET}")
+            sys.exit(1)
+        _cmd_plan(user_prompt)
+        return
+
     if not cmd or cmd.startswith("-"):
         print(f"{_C.BOLD}Idle Harness{_C.RESET} — GAN-inspired multi-agent app builder\n")
         print("Usage:")
-        print(f"  python orchestrator.py \"your app idea\"    Build an app")
+        print(f"  python orchestrator.py \"your app idea\"    Build an app (full pipeline)")
+        print()
+        print(f"  {_C.BOLD}Single-process commands:{_C.RESET}")
+        print(f"  python orchestrator.py plan \"idea\"         Plan only — generate spec")
+        print(f"  python orchestrator.py criteria            Generate criteria from existing spec")
+        print(f"  python orchestrator.py build               Build from existing spec + criteria")
+        print(f"  python orchestrator.py eval                Evaluate existing build (no rebuild)")
+        print()
+        print(f"  {_C.BOLD}Utilities:{_C.RESET}")
         print(f"  python orchestrator.py serve               Start the last-built app")
         print(f"  python orchestrator.py clean               Clean comms/ artifacts")
         print(f"  python orchestrator.py clean --all         Clean comms/ and output/")
