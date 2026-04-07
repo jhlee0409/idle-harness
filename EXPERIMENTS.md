@@ -281,7 +281,7 @@ done
 
 ---
 
-### Experiment B: Opus Evaluator + 강화된 프롬프트 (2026-04-08)
+### Experiment B: Opus Evaluator + 강화된 프롬프트 (2026-04-07~08)
 
 대상 빌드: `mise-en-place-a-recipe-sharing-platform` (동일 빌드)
 목적: 아티클 원칙 검증 — Verifier 미들웨어 없이 Evaluator만으로 품질 보장 가능한지
@@ -309,6 +309,35 @@ done
 - 같은 앱이 이전엔 PASS, 이제는 80.2%로 FAIL → 프롬프트 품질이 핵심
 - Verifier 미들웨어 불필요. `verifier_enabled: False`로 비활성화.
 - Evaluator 프롬프트 반복 개선이 가장 높은 레버리지.
+
+---
+
+### Experiment C: GAN 루프 수렴 테스트 (2026-04-08)
+
+대상 빌드: `mise-en-place-a-recipe-sharing-platform` (Experiment B에서 FAIL 받은 동일 빌드)
+목적: FAIL 피드백 → Generator 수정 → 재평가를 반복하면 PASS에 도달하는지
+
+| Eval | Build | Pass Rate | Verdict | Build 비용 | Eval 비용 | Eval 시간 |
+|------|-------|-----------|---------|-----------|-----------|-----------|
+| #6 | - | 89/111 (80.2%) | FAIL | - | $16.95 | 47m |
+| #7 | #5 (15m, $7.64) | 103/113 (91.2%) | FAIL | $7.64 | $16.35 | 50m |
+| #8 | #6 (?, $?) | ? | FAIL | ~$7 | $13.61 | 53m |
+| **#9** | **#7** | **107/120 (89%)** | **PASS** | **~$8** | **$17.47** | **40m** |
+
+**FAIL → PASS까지 3 사이클.** 80.2% → 91.2% → FAIL → **PASS (89%)**
+
+PASS 평가 품질:
+- Banned phrases: **0건**
+- Screenshot 증거: **107/120 criteria**
+- Automation-limited: **2건** (file_upload 패턴, 정당한 예외)
+- AI 기능: **실제 동작 확인** (구조화된 레시피 생성 + APPLY TO FORM)
+- Evidence Audit 섹션: **포함됨**
+
+**결론:**
+1. GAN 루프가 동작한다. Evaluator FAIL 피드백이 Generator를 개선시킨다.
+2. 3사이클 (build 15-20min + eval 40-50min = ~60min/cycle) × 3 = ~3시간으로 PASS 도달.
+3. 아티클 원칙 최종 확인: 엄격한 Evaluator 프롬프트 + Opus = 미들웨어 없이 품질 보장.
+4. Verifier 미들웨어는 불필요. `verifier_enabled: False` 유지.
 
 ---
 
