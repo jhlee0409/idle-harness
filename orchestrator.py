@@ -559,6 +559,12 @@ class Orchestrator:
 
             with open(eval_path, "w") as f:
                 f.write(eval_result.result)
+            # Save attempt-specific copy for quality tracking history
+            _save_agent_response(
+                sprint_dir,
+                f"evaluation_attempt_{attempt}.md",
+                eval_result.result,
+            )
         finally:
             _log("Evaluator", f"{label} — Stopping servers...")
             self.server.stop()
@@ -802,6 +808,11 @@ class Orchestrator:
 
                 with open(eval_path, "w") as f:
                     f.write(eval_result.result)
+                _save_agent_response(
+                    self.comms_dir,
+                    f"integration_evaluation_attempt_{attempt}.md",
+                    eval_result.result,
+                )
             except AgentTimeout as exc:
                 _log("Harness", f"Integration eval attempt {attempt} TIMEOUT: {exc}")
                 _log("Harness", f"Agent timed out — stopping integration eval.")
@@ -976,6 +987,11 @@ class Orchestrator:
                 self._track_cost(eval_result, "design_eval")
                 with open(eval_path, "w") as f:
                     f.write(eval_result.result)
+                _save_agent_response(
+                    self._sprint_dir(sprint),
+                    f"evaluation_design_{iteration}.md",
+                    eval_result.result,
+                )
             except AgentTimeout as exc:
                 _log("Harness", f"Design eval {iteration} TIMEOUT: {exc}")
                 _log("Harness", f"Agent timed out — stopping design refinement.")
