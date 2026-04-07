@@ -3,8 +3,9 @@ from urllib.parse import urlparse
 
 CONFIG = {
     # --- Harness mode ---
+    # "simple": single build + single evaluation (recommended for Opus 4.6 / 1M context)
     # "full": sprint decomposition + contract negotiation + multi-eval
-    # "simple": single build + single end-of-build evaluation (no sprints/contracts)
+    #         (use for smaller models or <200k context where single-pass build is unreliable)
     "mode": "simple",
 
     # --- Model ---
