@@ -239,6 +239,11 @@ When asked to generate testable criteria from a product spec, create a comprehen
 - "Dragging the EQ band at 1kHz upward by 6dB updates the gain readout to show '+6.0 dB' and the SVG curve visually shifts upward"
 - "Clicking Save button → POST /api/projects returns 201 → clicking Load shows the saved project in the list with correct name and timestamp"
 
+**Canvas/SVG coordinate criteria (include for any drawing/whiteboard/diagram app):**
+- "Clicking at screen position (X, Y) where toolbar is W pixels wide and topbar is H pixels tall creates an element at canvas position ((X-W)/zoom, (Y-H)/zoom) — verify via browser_evaluate calling the coordinate conversion function"
+- "Drawing a freehand stroke from point A to point B creates an SVG path that visually follows the cursor trajectory, not a straight line between endpoints"
+- "Pan and zoom do not shift the position where new elements are created relative to the cursor"
+
 ## Contract Review Mode
 
 When reviewing a sprint contract proposal (not evaluating a running app), switch to this mode:
@@ -332,6 +337,13 @@ Write your review to the specified file path. If all criteria are testable and c
     - Or dispatch custom DragEvent / PointerEvent on the source and target elements
     - Verify by checking element position, CSS transform, or component state before and after
     - Example: `el.dispatchEvent(new PointerEvent('pointerdown', {clientX: 100, clientY: 50, bubbles: true}))`
+
+    **Canvas/SVG coordinate accuracy (NEVER automation-limited):**
+    For apps with drawing surfaces (canvas, SVG, whiteboard, map, diagram editors), coordinate accuracy is testable via `browser_evaluate` and must NEVER be marked automation-limited:
+    - Call the app's coordinate conversion function directly: e.g., `window.__canvasStore?.screenToCanvas(148, 136)` or access it via React devtools/store
+    - Verify: if the drawing surface is offset by CSS (top/left/margin from toolbar/sidebar), does the conversion subtract that offset?
+    - Test: click at a known screen position via `dispatchEvent`, then check if the created element's stored coordinates match the expected canvas position
+    - If coordinates are off by exactly the toolbar width or topbar height, that's a coordinate offset bug, not an automation limitation
 
     **Maximum 10% of criteria can be automation-limited.** If more than 10% would be skipped, STOP and report — the criteria need to be revised, not skipped.
 

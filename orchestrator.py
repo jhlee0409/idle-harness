@@ -47,6 +47,23 @@ def _parse_failed_parts(text: str) -> tuple[bool, bool]:
     return _part_passed(_FRONTEND_CRITERIA), _part_passed(_BACKEND_CRITERIA)
 
 
+def _parse_automation_limited(text: str) -> tuple[int, int]:
+    """Count automation-limited vs total criteria in evaluation text.
+
+    Returns (automation_limited_count, total_criteria_count).
+    """
+    lines = text.split("\n")
+    total = 0
+    limited = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("- [") or stripped.startswith("- [ ]") or stripped.startswith("- [x]"):
+            total += 1
+            if "automation-limited" in stripped.lower():
+                limited += 1
+    return limited, total
+
+
 def _slug_from_spec(spec: str) -> str:
     match = re.search(r"^#\s+(.+)$", spec, re.MULTILINE)
     if match:
@@ -337,6 +354,23 @@ class Orchestrator:
         eval_path = os.path.join(sprint_dir, "evaluation.md")
         eval_context = _read_file_optional(eval_path)
         if eval_context:
+            # Extract automation-limited items so Generator knows to self-verify them
+            limited_items = [
+                line.strip() for line in eval_context.split("\n")
+                if "automation-limited" in line.lower()
+            ]
+            limited_section = ""
+            if limited_items:
+                items_text = "\n".join(f"  {item}" for item in limited_items)
+                limited_section = (
+                    f"\n\n⚠️ AUTOMATION-LIMITED ITEMS ({len(limited_items)} criteria the Evaluator "
+                    f"could NOT test via browser automation):\n{items_text}\n"
+                    f"These features MUST work but the Evaluator cannot verify them. "
+                    f"YOU must self-test each one: run the app, trigger the interaction "
+                    f"programmatically or via curl/API, and confirm correct behavior. "
+                    f"If any of these are broken, the next evaluation will fail again."
+                )
+
             eval_context = (
                 f"\n\nPrevious evaluation feedback:\n{eval_context}\n\n"
                 f"Make a strategic decision before coding:\n"
@@ -345,6 +379,7 @@ class Orchestrator:
                 f"multiple simultaneous failures, or no improvement from previous attempt). "
                 f"State your decision explicitly: 'STRATEGY: REFINE — [reason]' or "
                 f"'STRATEGY: PIVOT — [reason]'."
+                f"{limited_section}"
             )
 
         self.state.increment(sprint.number, "build")
@@ -375,7 +410,12 @@ class Orchestrator:
                 f"satisfied vs total — if <90%, keep building.\n\n"
                 f"Work in the current directory. Self-verify: build must succeed, app must run. "
                 f"Commit your changes with git.\n\n"
-                f"Write the dev server config to this ABSOLUTE path: {dev_server_json_path}"
+                f"Write the dev server config to this ABSOLUTE path: {dev_server_json_path}\n\n"
+                f"MANDATORY: Before finishing, write a self-evaluation to this ABSOLUTE path: "
+                f"{self._sprint_dir(sprint)}/self_eval.md\n"
+                f"Format: for each testable criterion, write '- [x] criterion text' if satisfied "
+                f"or '- [ ] criterion text — reason' if not. Count your pass rate at the end: "
+                f"'Self-eval pass rate: X/Y (Z%)'. If <90%, keep building."
             )
         else:
             prompt = (
@@ -387,7 +427,12 @@ class Orchestrator:
                 f"Read the product spec file for visual design language and feature details. "
                 f"Work in the current directory. Self-verify: build must succeed, app must run. "
                 f"Commit your changes with git.\n\n"
-                f"Write the dev server config to this ABSOLUTE path: {dev_server_json_path}"
+                f"Write the dev server config to this ABSOLUTE path: {dev_server_json_path}\n\n"
+                f"MANDATORY: Before finishing, write a self-evaluation to this ABSOLUTE path: "
+                f"{self._sprint_dir(sprint)}/self_eval.md\n"
+                f"Format: for each testable criterion, write '- [x] criterion text' if satisfied "
+                f"or '- [ ] criterion text — reason' if not. Count your pass rate at the end: "
+                f"'Self-eval pass rate: X/Y (Z%)'. If <90%, keep building."
             )
 
         try:
@@ -412,6 +457,21 @@ class Orchestrator:
         self.state.add_sprint_timing(sprint.number, "build", elapsed)
         _log("Generator", f"{label} — Build complete. ({_fmt_stats(agent_result, start)})")
         _print_build_summary(self.output_dir)
+
+        # Check Generator self-eval if written
+        self_eval_path = os.path.join(self._sprint_dir(sprint), "self_eval.md")
+        self_eval_text = _read_file_optional(self_eval_path)
+        if self_eval_text:
+            rate_match = re.search(r"(\d+)/(\d+)", self_eval_text.split("Self-eval pass rate:")[-1] if "Self-eval pass rate:" in self_eval_text else "")
+            if rate_match:
+                passed_count = int(rate_match.group(1))
+                total_count = int(rate_match.group(2))
+                pct = int(passed_count / total_count * 100) if total_count > 0 else 0
+                _log("Generator", f"Self-eval: {passed_count}/{total_count} ({pct}%) criteria satisfied.")
+                if pct < 90:
+                    _log("Harness", f"Self-eval below 90% ({pct}%). Generator should have continued building.")
+        else:
+            _log("Harness", "Generator did not write self_eval.md. Self-evaluation skipped.")
 
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
         contract = _read_file(contract_path)
@@ -473,6 +533,17 @@ class Orchestrator:
         self.state.add_sprint_timing(sprint.number, "eval", elapsed)
 
         passed = _check_verdict_pass(eval_result.result)
+
+        # Reject PASS if too many criteria were skipped as automation-limited
+        if passed:
+            limited, total = _parse_automation_limited(eval_result.result)
+            if total > 0 and limited / total > 0.10:
+                _log("Evaluator",
+                     f"{label} — Verdict was PASS but {limited}/{total} criteria "
+                     f"({int(limited/total*100)}%) marked automation-limited. "
+                     f"Overriding to FAIL — too many untested features.")
+                passed = False
+
         stats = _fmt_stats(eval_result, start)
         if passed:
             _log("Evaluator", f"{label} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
