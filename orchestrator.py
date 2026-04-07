@@ -47,6 +47,14 @@ def _parse_failed_parts(text: str) -> tuple[bool, bool]:
     return _part_passed(_FRONTEND_CRITERIA), _part_passed(_BACKEND_CRITERIA)
 
 
+_CRITERIA_RE = re.compile(r"^\s*- \[[x ]\] ", re.MULTILINE)
+
+
+def _count_criteria(text: str) -> int:
+    """Count checkbox-format criteria lines (- [x] or - [ ])."""
+    return len(_CRITERIA_RE.findall(text))
+
+
 def _parse_automation_limited(text: str) -> tuple[int, int]:
     """Count automation-limited vs total criteria in evaluation text.
 
@@ -57,7 +65,7 @@ def _parse_automation_limited(text: str) -> tuple[int, int]:
     limited = 0
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("- [") or stripped.startswith("- [ ]") or stripped.startswith("- [x]"):
+        if re.match(r"^- \[[x ]\] ", stripped):
             total += 1
             if "automation-limited" in stripped.lower():
                 limited += 1
@@ -114,6 +122,8 @@ class Orchestrator:
 
         # Continuous session: Generator keeps context across build attempts
         self._generator_session_id: str | None = None
+        # Cache contracts to prevent generator from modifying criteria between retries
+        self._cached_contracts: dict[str, str] = {}
 
         self.state = HarnessState(self.comms_dir)
         self.server = None
@@ -254,7 +264,7 @@ class Orchestrator:
 
         criteria_text = _read_file(criteria_path)
         # Count criteria lines and validate minimum quality
-        criteria_count = len([l for l in criteria_text.split("\n") if l.strip().startswith("- [")])
+        criteria_count = _count_criteria(criteria_text)
         if criteria_count < 10:
             raise RuntimeError(
                 f"Criteria generation produced only {criteria_count} criteria (minimum 10 required). "
@@ -346,10 +356,7 @@ class Orchestrator:
         return f"Sprint {sprint.number}"
 
     async def build(self, sprint: Sprint, contract_path: str):
-        # Cache contract in memory to prevent generator from modifying criteria
-        # between retries (GAN principle: generator cannot weaken its own test plan)
-        if not hasattr(self, '_cached_contracts'):
-            self._cached_contracts = {}
+        # Use cached contract (GAN principle: generator cannot weaken its own test plan)
         cache_key = contract_path
         if cache_key not in self._cached_contracts:
             self._cached_contracts[cache_key] = _read_file(contract_path)
@@ -399,7 +406,7 @@ class Orchestrator:
         start = time.time()
 
         if is_simple:
-            criteria_count = len([l for l in contract.split("\n") if l.strip().startswith("- [")])
+            criteria_count = _count_criteria(contract)
             prompt = (
                 f"Build the COMPLETE application.\n\n"
                 f"Testable criteria ({criteria_count} criteria — the Evaluator will test EACH ONE):\n{contract}\n\n"
@@ -467,7 +474,7 @@ class Orchestrator:
         self_eval_path = os.path.join(self._sprint_dir(sprint), "self_eval.md")
         self_eval_text = _read_file_optional(self_eval_path)
         if self_eval_text:
-            rate_match = re.search(r"(\d+)/(\d+)", self_eval_text.split("Self-eval pass rate:")[-1] if "Self-eval pass rate:" in self_eval_text else "")
+            rate_match = re.search(r"pass rate:\s*(\d+)/(\d+)", self_eval_text, re.IGNORECASE)
             if rate_match:
                 passed_count = int(rate_match.group(1))
                 total_count = int(rate_match.group(2))
@@ -479,7 +486,10 @@ class Orchestrator:
             _log("Harness", "Generator did not write self_eval.md. Self-evaluation skipped.")
 
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
-        contract = _read_file(contract_path)
+        # Use cached contract (GAN principle — same as build())
+        if contract_path not in self._cached_contracts:
+            self._cached_contracts[contract_path] = _read_file(contract_path)
+        contract = self._cached_contracts[contract_path]
 
         sprint_dir = self._sprint_dir(sprint)
         eval_path = os.path.join(sprint_dir, "evaluation.md")
@@ -571,6 +581,11 @@ class Orchestrator:
             except InfraError as exc:
                 _log("Harness", f"{label} attempt {attempt + 1} INFRA ERROR: {exc}")
                 _log("Harness", f"Infrastructure error — rebuilding won't help. Stopping retries for {label}.")
+                passed = False
+                break
+            except AgentTimeout as exc:
+                _log("Harness", f"{label} attempt {attempt + 1} TIMEOUT: {exc}")
+                _log("Harness", f"Agent timed out — likely stuck. Stopping retries for {label}.")
                 passed = False
                 break
             except AgentError as exc:
@@ -693,6 +708,11 @@ class Orchestrator:
 
                 with open(eval_path, "w") as f:
                     f.write(eval_result.result)
+            except AgentTimeout as exc:
+                _log("Harness", f"Integration eval attempt {attempt} TIMEOUT: {exc}")
+                _log("Harness", f"Agent timed out — stopping integration eval.")
+                self.state.set_sprint_result(0, False)
+                return
             except AgentError as exc:
                 _log("Harness", f"Integration eval attempt {attempt} error: {exc}")
                 continue
@@ -735,6 +755,12 @@ class Orchestrator:
                         self._generator_session_id = fix_result.session_id
                     self._track_cost(fix_result, "integration_fix")
                     _log("Generator", f"Integration fix complete. ({_fmt_stats(fix_result, fix_start)})")
+                except AgentTimeout as exc:
+                    self._generator_session_id = None
+                    _log("Harness", f"Integration fix TIMEOUT: {exc}")
+                    _log("Harness", f"Agent timed out — stopping integration eval.")
+                    self.state.set_sprint_result(0, False)
+                    return
                 except AgentError as exc:
                     self._generator_session_id = None
                     _log("Harness", f"Integration fix error: {exc}")
@@ -764,12 +790,16 @@ class Orchestrator:
         sprint_dir = self._sprint_dir(sprint)
         eval_path = os.path.join(sprint_dir, "evaluation.md")
         screenshots_dir = os.path.join(sprint_dir, "screenshots")
-        contract = _read_file(contract_path)
+        # Use cached contract (GAN principle — same as build())
+        if contract_path not in self._cached_contracts:
+            self._cached_contracts[contract_path] = _read_file(contract_path)
+        contract = self._cached_contracts[contract_path]
 
         print(f"\n{_C.BOLD}{'─' * 60}")
         _log("Harness", f"Design Refinement (up to {max_iters} iterations)")
         print(f"{'─' * 60}{_C.RESET}")
 
+        iteration = 0
         for iteration in range(1, max_iters + 1):
             # --- Generator: design-only fix ---
             prev_eval = _read_file_optional(eval_path)
@@ -779,6 +809,7 @@ class Orchestrator:
                 f"DESIGN REFINEMENT — backend is working, focus ONLY on visual design.\n\n"
                 f"The backend criteria (Product Depth, Functionality, Code Quality) passed. "
                 f"But frontend criteria failed. Fix the design issues below.\n\n"
+                f"Testable criteria (the Evaluator will re-test these):\n{contract}\n\n"
                 f"Previous evaluation:\n{prev_eval}\n\n"
                 f"Product spec: Read from {self.spec_path}\n\n"
                 f"Make a strategic decision: REFINE if the design direction is promising, "
@@ -802,6 +833,11 @@ class Orchestrator:
                     self._generator_session_id = fix_result.session_id
                 self._track_cost(fix_result, "design_refinement")
                 _log("Generator", f"Design iteration {iteration} complete. ({_fmt_stats(fix_result, fix_start)})")
+            except AgentTimeout as exc:
+                self._generator_session_id = None
+                _log("Harness", f"Design iteration {iteration} TIMEOUT: {exc}")
+                _log("Harness", f"Agent timed out — stopping design refinement.")
+                break
             except AgentError as exc:
                 self._generator_session_id = None
                 _log("Harness", f"Design iteration {iteration} error: {exc}")
@@ -835,6 +871,10 @@ class Orchestrator:
                 self._track_cost(eval_result, "design_eval")
                 with open(eval_path, "w") as f:
                     f.write(eval_result.result)
+            except AgentTimeout as exc:
+                _log("Harness", f"Design eval {iteration} TIMEOUT: {exc}")
+                _log("Harness", f"Agent timed out — stopping design refinement.")
+                break
             except AgentError as exc:
                 _log("Harness", f"Design eval {iteration} error: {exc}")
                 continue

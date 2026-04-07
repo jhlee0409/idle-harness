@@ -52,6 +52,8 @@ TOOLS_FULL = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 
 # Evaluator: Write only — no Read prevents source code access (GAN principle).
 # Contracts and specs are passed directly in the prompt, so Read is unnecessary.
+# Note: MCP tools (Playwright) are added automatically by the SDK when mcp_servers
+# is passed to call_agent(). They bypass the allowed_tools filter.
 TOOLS_EVALUATOR = ["Write"]
 
 _HARNESS_ROOT = os.path.dirname(os.path.abspath(__file__))

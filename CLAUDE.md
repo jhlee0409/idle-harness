@@ -39,7 +39,7 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 2. **Evaluator** generates `comms/testable_criteria.md` — 50-150 concrete, interaction-level test criteria from the spec (replaces contract negotiation)
 3. **Generator** builds entire app in `output/{slug}/` with TOOLS_FULL, using criteria as checklist
 4. **Evaluator** tests running app via Playwright MCP against each criterion individually
-5. On FAIL: feedback → Generator retries (max 3 build attempts, continuous session via `session_id`)
+5. On FAIL: feedback → Generator retries (max 10 build attempts, continuous session via `session_id`). Timeout/InfraError stops retries immediately.
 6. If backend passes but frontend design fails → **design refinement loop** (up to 10 iterations)
 7. `comms/` artifacts archived to `output/{slug}/.harness/`
 
@@ -49,15 +49,16 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 2. Per sprint: **Generator** proposes contract → **Evaluator** reviews → agree or iterate (max 3 rounds)
 3. **Generator** builds in `output/{slug}/` with TOOLS_FULL
 4. **Evaluator** tests running app via Playwright MCP with TOOLS_EVALUATOR
-5. On FAIL: feedback → Generator retries (max 3 attempts, continuous session via `session_id`)
+5. On FAIL: feedback → Generator retries (max 10 attempts, continuous session via `session_id`). Timeout/InfraError stops retries immediately.
 6. After all sprints: integration eval with build-fix-eval loop (Generator fixes → Evaluator re-tests)
 7. `comms/` artifacts archived to `output/{slug}/.harness/`
 
 ### Key Design Decisions
 
-- **Evaluator cannot read source code** — `TOOLS_EVALUATOR = ["Write"]` in config.py. Spec and contract content are passed in the prompt, not read from files. This enforces the GAN principle.
+- **Evaluator cannot read source code** — `TOOLS_EVALUATOR = ["Write"]` in config.py. Spec and contract content are passed in the prompt, not read from files. MCP tools (Playwright) are added automatically by the SDK when `mcp_servers` is passed — they bypass the `allowed_tools` filter. This enforces the GAN principle.
 - **Generator maintains continuous session** — `session_id` from SDK init messages is reused across retry attempts. Reset on crash (`AgentError` resets `_generator_session_id`).
 - **MCP is SDK-managed** — Playwright MCP launched via `mcp_servers` in `ClaudeAgentOptions`, not user-configured `.mcp.json`.
+- **Timeout stops retries** — `AgentTimeout` is caught separately from `AgentError` in the retry loop. Timeouts indicate the agent is stuck (hanging command, infinite loop), so retries are stopped immediately rather than wasting build cycles.
 - **`comms/` is staging, not persistence** — Wiped on each `setup()`. Project artifacts archived to `output/{slug}/.harness/` after completion.
 - **Verdict/contract parsing uses regex** — `_check_verdict_pass()` matches `^#{0,3}\s*Verdict:\s*PASS\s*$` to prevent false positives. `_check_contract_agreed()` matches `^AGREED\b`.
 - **Evaluator PASS is validated** — Orchestrator parses evaluation for automation-limited ratio; >10% skipped criteria overrides PASS to FAIL. Prevents evaluator from rubber-stamping untested features.
@@ -65,7 +66,8 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 - **Automation-limited feedback loop** — Items the evaluator couldn't test are extracted and passed back to the generator on retry with explicit self-test instructions.
 - **Criteria generation has no fallback** — If evaluator fails to write testable_criteria.md or produces <10 criteria, harness raises RuntimeError instead of silently degrading.
 - **Evaluator gets spec in simple mode** — Product spec (with Visual Design Language) is passed inline alongside testable criteria so evaluator can assess design quality against the original design direction.
-- **Contract is cached in memory** — Orchestrator caches contract text on first read to prevent generator from modifying criteria between retries (GAN integrity).
+- **Contract is cached in memory** — `_cached_contracts` dict initialized in `__init__`, caches contract text on first read to prevent generator from modifying criteria between retries (GAN integrity).
+- **Design refinement includes contract** — Generator receives testable criteria during design refinement so it knows which specific frontend criteria the Evaluator will re-test.
 
 ### File Roles
 

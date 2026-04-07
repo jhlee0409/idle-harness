@@ -3,9 +3,9 @@ import os
 import tempfile
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
-from cli import AgentResult, InfraError
+from cli import AgentResult, AgentTimeout, InfraError
 from config import CONFIG, CONTRACT_AGREED, TOOLS_EVALUATOR
-from orchestrator import Orchestrator, UserAbort, _check_verdict_pass, _check_contract_agreed, _parse_failed_parts
+from orchestrator import Orchestrator, UserAbort, _check_verdict_pass, _check_contract_agreed, _parse_failed_parts, _parse_automation_limited
 
 
 SAMPLE_SPEC = """# Test App
@@ -342,7 +342,7 @@ async def test_retry_stops_on_infra_error():
                 passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
         assert passed is False
-        # Should have only attempted ONE build, not 3
+        # Should have only attempted ONE build, not max_build_attempts
         assert build_count == 1
 
 
@@ -350,7 +350,7 @@ async def test_retry_stops_on_infra_error():
 
 @pytest.mark.anyio
 async def test_retry_asks_user_on_max_failures_continue():
-    """After 3 failures, user is asked. Choosing continue still marks sprint as FAIL."""
+    """After max_build_attempts failures, user is asked. Choosing continue still marks sprint as FAIL."""
     with tempfile.TemporaryDirectory() as tmpdir:
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
@@ -380,7 +380,7 @@ async def test_retry_asks_user_on_max_failures_continue():
 
 @pytest.mark.anyio
 async def test_retry_asks_user_on_max_failures_abort():
-    """After 3 failures, user choosing abort raises UserAbort."""
+    """After max_build_attempts failures, user choosing abort raises UserAbort."""
     with tempfile.TemporaryDirectory() as tmpdir:
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
@@ -443,7 +443,7 @@ async def test_integration_eval_fail():
                 with patch("orchestrator._ask_user_continue"):
                     await orch._integration_eval()
 
-        # max_build_attempts=3: 3 evals + 2 generator fixes = 5 agent calls
+        # max_build_attempts evals + (max_build_attempts - 1) generator fixes
         max_attempts = CONFIG["max_build_attempts"]
         expected_calls = max_attempts + (max_attempts - 1)  # evals + fixes
         assert mock.call_count == expected_calls
@@ -619,3 +619,74 @@ def test_parse_failed_parts_both_fail():
     fe, be = _parse_failed_parts(text)
     assert fe is False
     assert be is False
+
+
+# --- AgentTimeout stops retries ---
+
+@pytest.mark.anyio
+async def test_retry_stops_on_timeout():
+    """AgentTimeout should stop retries immediately — agent is likely stuck."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Users can log in")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n1. Login works")
+
+        build_count = 0
+
+        async def mock_build(s, cp):
+            nonlocal build_count
+            build_count += 1
+
+        async def mock_evaluate(s, cp):
+            raise AgentTimeout("Agent timed out after 45m")
+
+        with patch.object(orch, "build", side_effect=mock_build):
+            with patch.object(orch, "evaluate", side_effect=mock_evaluate):
+                passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
+
+        assert passed is False
+        # Should have only attempted ONE build, not max_build_attempts
+        assert build_count == 1
+
+
+# --- Automation-limited parsing ---
+
+def test_parse_automation_limited_counts_correctly():
+    text = """
+- [x] Feature that works (tested via click) | screenshots/test.png
+- [ ] Feature that is broken ← FAIL | screenshots/fail.png
+- [x] Another passing feature | screenshots/pass.png
+- [ ] Drag-and-drop — automation-limited | screenshots/drag.png
+"""
+    limited, total = _parse_automation_limited(text)
+    assert total == 4
+    assert limited == 1
+
+
+def test_parse_automation_limited_ignores_markdown_links():
+    """Markdown links like - [text](url) should NOT count as criteria."""
+    text = """
+- [x] Real criterion passes | screenshots/test.png
+- [ ] Real criterion fails | screenshots/fail.png
+- [See documentation](https://example.com) for more info
+- [Link text](url) should not match
+"""
+    limited, total = _parse_automation_limited(text)
+    assert total == 2
+    assert limited == 0
+
+
+def test_parse_automation_limited_empty():
+    limited, total = _parse_automation_limited("No criteria here.")
+    assert total == 0
+    assert limited == 0
