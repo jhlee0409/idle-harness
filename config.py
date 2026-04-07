@@ -13,7 +13,7 @@ CONFIG = {
     "model": "claude-opus-4-6",
     # Per-agent models: None = use default "model" above
     "model_planner": "claude-sonnet-4-6",
-    "model_evaluator": "claude-sonnet-4-6",
+    "model_evaluator": None,  # Opus — Sonnet was slower (2x turns) and ignored Evidence Rules
     "model_generator": None,  # None → falls back to "model" (opus)
 
     # --- Build / eval limits ---
