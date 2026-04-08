@@ -296,6 +296,51 @@ Example:
 
 #### Verdict: PASS
 
+---
+
+### Example Evaluation: FAIL (App Crash — Catastrophic)
+
+#### Feature Testing
+- [ ] Page background uses #080809 — CANNOT TEST, app crashes on load, blank page | screenshots/blank-page.png
+- [ ] Clicking "New Playlist" creates entry — CANNOT TEST, no UI renders | screenshots/blank-page.png
+- [ ] ... (68 more criteria all CANNOT TEST)
+
+*Note: When the app crashes and renders nothing, mark ALL UI criteria as FAIL with "CANNOT TEST, app crashes" — do not skip them or mark them automation-limited. A blank page is the most severe failure.*
+
+#### Quality Assessment — Frontend / Backend
+All FAIL. An app that doesn't render has no design quality, no functionality, no depth.
+
+#### Verdict: FAIL
+
+#### Required Changes
+1. [CRITICAL] Fix React runtime error that crashes MainApp on page load. **Blast radius: fixes ALL 73 criteria** — the entire app is blocked by this one crash. Check browser console for the exact error.
+
+*This is what a catastrophic regression looks like. The Generator "fixed" something from the previous evaluation and broke the entire app. One targeted fix unblocks everything.*
+
+---
+
+### Example Evaluation: FAIL (Retry with Regression Analysis)
+
+Previous evaluation scored 87% (73/84 pass). After Generator's fixes:
+
+#### Feature Testing
+- [x] Page background uses #080809 — confirmed rgb(8,8,9) | screenshots/01-bg.png
+- [ ] **[REGRESSION]** Sidebar playlist click opens editor — was PASS in previous eval, now clicking does nothing. Sidebar items have no click handler. | screenshots/15-sidebar-broken.png
+- [ ] **[PERSISTENT]** Noise grain overlay missing — still flat solid background, no SVG filter | screenshots/01-bg.png
+- [x] **[FIXED]** Loading skeleton visible — now shows skeleton on slow API | screenshots/08-skeleton.png
+
+#### Regression Analysis
+- **Regressions**: 1 (sidebar click handler removed during refactoring)
+- **Fixed**: 3 (loading skeleton, name validation, delete modal)
+- **Persistent**: 2 (noise grain, alternating row shading)
+- **Net change**: +3 fixed, -1 regressed — but the regression blocks 23 dependent criteria
+
+#### Verdict: FAIL
+
+#### Required Changes
+1. [REGRESSION] Restore sidebar click handler — **blast radius: unblocks 23 criteria** (track list, delete, search, edit name all depend on opening a playlist). The onClick was likely removed during the skeleton loading refactor.
+2. [PERSISTENT] Add noise grain overlay — **isolated fix**, SVG feTurbulence at 3% opacity on body::before.
+
 ## Criteria Generation Mode
 
 When asked to generate testable criteria from a product spec, create a comprehensive checklist that the Generator must implement and you will later test. This is the most important document in the harness — it defines "done."

@@ -797,9 +797,14 @@ class Orchestrator:
                 self._generator_session_id = None
 
     async def _retry_build_eval(self, sprint: Sprint, contract_path: str, label: str):
-        """Shared retry loop for both full and simple modes."""
+        """Shared retry loop for both full and simple modes.
+
+        Adaptive: after first eval, adjusts effective max attempts based on score.
+        Article principle: "evaluator worth cost when task at edge of model capability."
+        """
         sprint_passed = False
-        for attempt in range(CONFIG["max_build_attempts"]):
+        max_attempts = CONFIG["max_build_attempts"]
+        for attempt in range(max_attempts):
             try:
                 # Smoke test: if app is buildable but crashing, detect early
                 await self.build(sprint, contract_path)
@@ -855,7 +860,19 @@ class Orchestrator:
             # Regression detection: reset Generator session if score is declining
             self._check_regression(sprint, label)
 
-            if attempt == CONFIG["max_build_attempts"] - 1:
+            # Adaptive attempt limit based on first eval score
+            scores = self.state.get_eval_scores(sprint.number)
+            if len(scores) == 1:
+                first_score = scores[0]["pct"]
+                if first_score >= 90:
+                    max_attempts = min(max_attempts, attempt + 3)
+                    _log("Harness", f"{label} — First eval {first_score}% (near-pass). "
+                         f"Limiting to {max_attempts - attempt - 1} more attempt(s).")
+                elif first_score < 30:
+                    _log("Harness", f"{label} — First eval {first_score}% (very low). "
+                         f"App may be too complex for single-pass build.")
+
+            if attempt == max_attempts - 1:
                 # Delegate to user: continue or abort? (raises UserAbort)
                 _ask_user_continue(label)
 
@@ -1192,6 +1209,49 @@ class Orchestrator:
         _ask_user_continue("Design refinement")
         return False
 
+    async def _review_criteria(self, criteria_path: str) -> str:
+        """Generator reviews criteria before building (lightweight contract review).
+
+        Article principle: Generator should understand and vet criteria before building.
+        Returns path to the (possibly updated) criteria file.
+        """
+        criteria_text = _read_file(criteria_path)
+        criteria_count = _count_criteria(criteria_text)
+        _log("Generator", f"Reviewing {criteria_count} testable criteria...")
+        start = time.time()
+
+        prompt = (
+            f"Review these testable criteria BEFORE you start building. "
+            f"You will be evaluated against each one.\n\n"
+            f"Criteria:\n{criteria_text}\n\n"
+            f"For each criterion, briefly assess:\n"
+            f"1. Is it clear what to build and how to verify it?\n"
+            f"2. Are there any that conflict with each other?\n"
+            f"3. Are there any that are technically impossible to implement?\n\n"
+            f"Write a brief review (10-20 lines). Flag any issues. "
+            f"Then write ACKNOWLEDGED to confirm you understand the full scope.\n\n"
+            f"Do NOT start building yet. Just review and acknowledge."
+        )
+
+        try:
+            result = await call_agent(
+                system_prompt=self.generator_prompt,
+                user_prompt=prompt,
+                allowed_tools=TOOLS_READ_WRITE,
+                cwd=self.output_dir or self.root,
+                timeout=CONFIG.get("agent_timeout_negotiate", 300),
+                model=resolve_agent_model("generator"),
+            )
+            # Start the Generator's continuous session from this review
+            if result.session_id:
+                self._generator_session_id = result.session_id
+            self._track_cost(result, "criteria_review")
+            _log("Generator", f"Criteria review complete. ({_fmt_stats(result, start)})")
+        except (AgentError, AgentTimeout) as exc:
+            _log("Harness", f"Criteria review failed ({exc}), proceeding with original criteria.")
+
+        return criteria_path
+
     async def _run_simple(self):
         single_sprint = Sprint(number=1, name="Full Build")
         self.state.set_sprint_info(current=1, total=1)
@@ -1204,6 +1264,9 @@ class Orchestrator:
         contract_path = os.path.join(sprint_dir, "sprint_contract.md")
         # Copy criteria to sprint dir as the contract
         shutil.copy(criteria_path, contract_path)
+
+        # Generator reviews criteria before building (article: contract negotiation)
+        await self._review_criteria(contract_path)
 
         passed = await self._retry_build_eval(single_sprint, contract_path, "Simple mode")
 
