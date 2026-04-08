@@ -280,13 +280,17 @@ class Orchestrator:
             )
 
         criteria_text = _read_file(criteria_path)
-        # Count criteria lines and validate minimum quality
+        # Count criteria lines and validate quality bounds
         criteria_count = _count_criteria(criteria_text)
         if criteria_count < 10:
             raise RuntimeError(
                 f"Criteria generation produced only {criteria_count} criteria (minimum 10 required). "
                 f"The Evaluator may have failed to parse the spec correctly."
             )
+        if criteria_count > 100:
+            _log("Harness", f"⚠ {criteria_count} criteria generated (target: 50-100). "
+                 f"High criteria count increases eval time and cost. "
+                 f"Each criterion costs ~20s eval time, ~$0.10.")
         elapsed_s = int(time.time() - start)
         _log("Evaluator", f"Generated {criteria_count} testable criteria. ({_fmt_stats(agent_result, start)})")
         # Save criteria generation response for analysis
@@ -965,21 +969,32 @@ class Orchestrator:
             self.server.start()
             start = time.time()
             try:
-                eval_context = _read_file_optional(eval_path)
-                prev_feedback = ""
-                if eval_context:
-                    prev_feedback = f"\n\nPrevious evaluation feedback:\n{eval_context}"
+                # Previous evaluation for regression comparison
+                prev_eval_section = ""
+                if attempt > 1:
+                    prev_attempt_path = os.path.join(
+                        self.comms_dir, f"integration_evaluation_attempt_{attempt - 1}.md"
+                    )
+                    prev_eval = _read_file_optional(prev_attempt_path)
+                    if prev_eval and _count_criteria(prev_eval) > 0:
+                        prev_eval_section = (
+                            f"\n\n## Previous Evaluation (attempt {attempt - 1})\n\n"
+                            f"Compare your findings against this previous evaluation. "
+                            f"Label regressions (was PASS, now FAIL), fixes (was FAIL, now PASS), "
+                            f"and persistent failures. Prioritize regressions in Required Changes.\n\n"
+                            f"Previous evaluation:\n{prev_eval}"
+                        )
 
                 prompt = (
-                        f"Final Integration Evaluation.\n\n"
+                    f"Final Integration Evaluation.\n\n"
                     f"All sprints have been built. Evaluate the COMPLETE application end-to-end.\n\n"
                     f"Full product spec:\n{self.spec}\n\n"
-                    f"{prev_feedback}\n\n"
                     f"Navigate to {CONFIG['dev_server_url']}. "
                     f"Test the full user journey across all features — not just individual sprints. "
                     f"Verify that features from different sprints work together correctly. "
                     f"Take screenshots as evidence. "
                     f"Write your evaluation as a response."
+                    f"{prev_eval_section}"
                 )
                 eval_result = await call_agent(
                     system_prompt=self.evaluator_prompt,
@@ -992,12 +1007,25 @@ class Orchestrator:
                 )
                 self._track_cost(eval_result, "integration_eval")
 
-                with open(eval_path, "w") as f:
-                    f.write(eval_result.result)
+                # Preserve detailed evaluation (same logic as evaluate())
+                agent_response = eval_result.result
+                disk_eval = _read_file_optional(eval_path)
+                _, response_criteria = _parse_eval_score(agent_response)
+                _, disk_criteria = _parse_eval_score(disk_eval)
+
+                if disk_criteria > response_criteria:
+                    best_eval = disk_eval
+                    _log("Evaluator", f"Integration — Preserved disk evaluation "
+                         f"({disk_criteria} criteria) over agent response ({response_criteria} criteria)")
+                else:
+                    best_eval = agent_response
+                    with open(eval_path, "w") as f:
+                        f.write(agent_response)
+
                 _save_agent_response(
                     self.comms_dir,
                     f"integration_evaluation_attempt_{attempt}.md",
-                    eval_result.result,
+                    best_eval,
                 )
             except AgentTimeout as exc:
                 _log("Harness", f"Integration eval attempt {attempt} TIMEOUT: {exc}")
@@ -1010,15 +1038,24 @@ class Orchestrator:
             finally:
                 self.server.stop()
 
-            passed = _check_verdict_pass(eval_result.result)
+            passed = _check_verdict_pass(best_eval)
             stats = _fmt_stats(eval_result, start)
+
+            # Track integration eval score
+            eval_passed, eval_total = _parse_eval_score(best_eval)
+            if eval_total > 0:
+                pct = int(eval_passed / eval_total * 100)
+                self.state.add_eval_score(0, attempt, eval_passed, eval_total)
+                _log("Evaluator", f"Integration — Score: {eval_passed}/{eval_total} ({pct}%)")
+
             if passed:
                 _log("Evaluator", f"Integration eval — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
                 self.state.set_sprint_result(0, True)  # 0 = integration
                 return
 
             _log("Evaluator", f"Integration eval — {_C.RED}{_C.BOLD}FAIL{_C.RESET} ({stats})")
-            _print_required_changes(eval_result.result)
+            _print_eval_summary(best_eval)
+            _print_required_changes(best_eval)
 
             # --- Generator fix pass (unless last attempt) ---
             if attempt < max_attempts:

@@ -36,12 +36,14 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 ### Agent Flow (simple mode — default, per article's Opus 4.6 recommendation)
 
 1. **Planner** reads `agents/frontend-design-skill.md` then generates `comms/spec.md`
-2. **Evaluator** generates `comms/testable_criteria.md` — 50-150 concrete, interaction-level test criteria from the spec (replaces contract negotiation)
-3. **Generator** builds entire app in `output/{slug}/` with TOOLS_FULL, using criteria as checklist
-4. **Evaluator** tests running app via Playwright MCP against each criterion individually
-5. On FAIL: feedback → Generator retries (max 10 build attempts, continuous session via `session_id`). Timeout/InfraError stops retries immediately.
-6. If backend passes but frontend design fails → **design refinement loop** (up to 10 iterations)
-7. `comms/` artifacts archived to `output/{slug}/.harness/`
+2. **Evaluator** generates `comms/testable_criteria.md` — 50-100 concrete, interaction-level test criteria from the spec (warns if >100)
+3. **Generator reviews criteria** (`_review_criteria()`) — reads and acknowledges criteria before building, starts continuous session
+4. **Generator** builds entire app in `output/{slug}/` with TOOLS_FULL, using criteria as checklist
+5. **Smoke test** — HTTP health check before expensive eval. If app crashes, skip eval and feed error directly to Generator
+6. **Evaluator** tests running app via Playwright MCP against each criterion individually. Receives previous evaluation for regression comparison (REGRESSION/FIXED/PERSISTENT labels)
+7. On FAIL: feedback → Generator retries. Adaptive max attempts (first eval >90% → limit to 3 more). Regression detection resets Generator session on >20pp score drop. Timeout/InfraError stops retries immediately.
+8. If backend passes but frontend design fails → **design refinement loop** (up to 10 iterations)
+9. `comms/` artifacts archived to `output/{slug}/.harness/`
 
 ### Agent Flow (full mode — sprint decomposition)
 
@@ -61,10 +63,16 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 - **Timeout stops retries** — `AgentTimeout` is caught separately from `AgentError` in the retry loop. Timeouts indicate the agent is stuck (hanging command, infinite loop), so retries are stopped immediately rather than wasting build cycles.
 - **`comms/` is staging, not persistence** — Wiped on each `setup()`. Project artifacts archived to `output/{slug}/.harness/` after completion.
 - **Verdict/contract parsing uses regex** — `_check_verdict_pass()` matches `^#{0,3}\s*Verdict:\s*PASS\s*$` to prevent false positives. `_check_contract_agreed()` matches `^AGREED\b`.
-- **Evaluator PASS is validated** — Orchestrator parses evaluation for automation-limited ratio; >10% skipped criteria overrides PASS to FAIL. Prevents evaluator from rubber-stamping untested features.
-- **Generator writes self_eval.md** — Mandatory self-evaluation file with per-criterion pass/fail. Orchestrator parses pass rate and logs warning if <90%.
+- **Evaluator PASS is validated** — Orchestrator parses evaluation for automation-limited ratio; >5% skipped criteria overrides PASS to FAIL. Canvas drag/interactions are NOT automation-limited (testable via dispatchEvent or API).
+- **Evaluation preservation** — After eval, orchestrator compares disk-written evaluation (via Write tool) vs agent text response. Keeps whichever has more criteria, preventing data loss when Evaluator writes detailed eval to disk but returns a summary.
+- **Previous evaluation comparison** — On retry, Evaluator receives the previous evaluation and must label regressions (was PASS, now FAIL), fixes, and persistent failures. Required Changes include blast radius and priority.
+- **Smoke test** — Post-build HTTP health check (`_smoke_test()`) before expensive Evaluator. Catches app crashes in 5 seconds vs 30+ minutes. Failure is written to evaluation.md as direct feedback.
+- **Regression detection** — `_check_regression()` tracks eval scores in state.json. Resets Generator session on >20pp score drop from best, or three consecutive drops. Prevents context saturation.
+- **Adaptive eval frequency** — After first eval, if score >90% limits remaining attempts to 3. If <30% logs warning.
+- **Criteria review** — `_review_criteria()` in simple mode: Generator reads and acknowledges criteria before building, starting continuous session with criteria context.
+- **Generator writes self_eval.md** — Mandatory self-evaluation with actual verification (curl output, build results). Orchestrator logs discrepancy if self-eval claims >95% but last Evaluator scored <80%.
 - **Automation-limited feedback loop** — Items the evaluator couldn't test are extracted and passed back to the generator on retry with explicit self-test instructions.
-- **Criteria generation has no fallback** — If evaluator fails to write testable_criteria.md or produces <10 criteria, harness raises RuntimeError instead of silently degrading.
+- **Criteria generation has bounds** — Minimum 10, warns if >100. Target 50-100 criteria. If evaluator produces <10, harness raises RuntimeError.
 - **Evaluator gets spec in simple mode** — Product spec (with Visual Design Language) is passed inline alongside testable criteria so evaluator can assess design quality against the original design direction.
 - **Contract is cached in memory** — `_cached_contracts` dict initialized in `__init__`, caches contract text on first read to prevent generator from modifying criteria between retries (GAN integrity).
 - **Design refinement includes contract** — Generator receives testable criteria during design refinement so it knows which specific frontend criteria the Evaluator will re-test.
@@ -74,7 +82,7 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 - `orchestrator.py` — Orchestration + CLI + preflight + logging (~1000 lines, intentionally single file)
 - `cli.py` — `call_agent()` wrapper around `claude_agent_sdk.query()`. Returns `AgentResult` with session_id, tokens, cost. Exports `fmt_tokens()` and `fmt_elapsed()` shared formatters.
 - `config.py` — `CONFIG` dict, tool lists (`TOOLS_READ_WRITE`, `TOOLS_FULL`, `TOOLS_EVALUATOR`), `CONTRACT_AGREED` constant
-- `state.py` — `HarnessState` persists to `comms/status.json`. Per-sprint attempt counters, per-phase cost tracking, sprint results.
+- `state.py` — `HarnessState` persists to `comms/status.json`. Per-sprint attempt counters, per-phase cost tracking, sprint results, eval score history (`add_eval_score`, `get_eval_scores`, `get_last_eval_score`).
 - `server.py` — `DevServer` auto-detects project structure, manages subprocess lifecycle with process groups (`os.setsid`), health-checks via HTTP polling.
 - `agents/*.md` — System prompts. Planner reads `frontend-design-skill.md` at runtime via Read tool.
 
