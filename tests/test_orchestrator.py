@@ -5,7 +5,12 @@ import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from cli import AgentResult, AgentTimeout, InfraError
 from config import CONFIG, CONTRACT_AGREED, TOOLS_EVALUATOR
-from orchestrator import Orchestrator, UserAbort, _check_verdict_pass, _check_contract_agreed, _parse_failed_parts, _parse_automation_limited
+from orchestrator import (
+    Orchestrator, UserAbort, _check_verdict_pass, _check_contract_agreed,
+    _parse_failed_parts, _parse_automation_limited,
+    parse_criteria_sections, assign_sections_to_evaluators, CriteriaSection,
+    merge_evaluations,
+)
 
 
 SAMPLE_SPEC = """# Test App
@@ -1193,3 +1198,241 @@ async def test_evaluator_no_previous_eval_on_first_attempt():
                 await orch.evaluate(sprint, contract_path)
 
         assert "Previous Evaluation" not in captured_prompt
+
+
+# --- Criteria section parsing ---
+
+SAMPLE_CRITERIA = """\
+# App — Testable Criteria
+
+### Visual Design — Colors
+- [ ] Background is #080809
+- [ ] Buttons use amber #D4A843
+
+### P0: Playlist Management
+- [ ] Create playlist works
+- [ ] Delete playlist shows confirmation
+- [ ] Playlist persists after refresh
+
+### P1: Search
+- [ ] Typing queries API
+- [ ] Results show album art
+
+### Responsive Design
+- [ ] Mobile 375px no horizontal scroll
+"""
+
+
+def test_parse_criteria_sections():
+    sections = parse_criteria_sections(SAMPLE_CRITERIA)
+    assert len(sections) == 4
+    assert sections[0].header == "Visual Design — Colors"
+    assert sections[0].criteria_count == 2
+    assert sections[1].header == "P0: Playlist Management"
+    assert sections[1].criteria_count == 3
+    assert sections[2].header == "P1: Search"
+    assert sections[2].criteria_count == 2
+    assert sections[3].header == "Responsive Design"
+    assert sections[3].criteria_count == 1
+
+
+def test_parse_criteria_sections_empty():
+    sections = parse_criteria_sections("No sections here")
+    assert len(sections) == 0
+
+
+def test_assign_sections_single_bucket():
+    """Few criteria → single bucket, no parallelism."""
+    sections = parse_criteria_sections(SAMPLE_CRITERIA)
+    buckets = assign_sections_to_evaluators(sections, target_per_evaluator=25)
+    assert len(buckets) == 1
+    assert sum(s.criteria_count for s in buckets[0]) == 8
+
+
+def test_assign_sections_parallel():
+    """Many criteria → multiple buckets with lead separation."""
+    # Create sections with enough criteria to trigger parallel
+    sections = [
+        CriteriaSection("Visual Design — Colors", "- [ ] a\n- [ ] b\n- [ ] c", 3),
+        CriteriaSection("Responsive Design", "- [ ] d\n- [ ] e", 2),
+        CriteriaSection("UI States", "- [ ] f\n- [ ] g", 2),
+        CriteriaSection("P0: Canvas", "- [ ] h\n" * 10, 10),
+        CriteriaSection("P0: Board", "- [ ] i\n" * 8, 8),
+        CriteriaSection("P1: Collab", "- [ ] j\n" * 7, 7),
+        CriteriaSection("P1: AI", "- [ ] k\n" * 6, 6),
+        CriteriaSection("P2: Export", "- [ ] l\n" * 5, 5),
+    ]
+    buckets = assign_sections_to_evaluators(sections, target_per_evaluator=10)
+
+    # Bucket 0 = lead (Visual Design, Responsive, UI States)
+    lead_headers = {s.header for s in buckets[0]}
+    assert "Visual Design — Colors" in lead_headers
+    assert "Responsive Design" in lead_headers
+    assert "UI States" in lead_headers
+
+    # Feature sections distributed across other buckets
+    assert len(buckets) >= 3  # lead + at least 2 feature buckets
+    all_feature_headers = set()
+    for bucket in buckets[1:]:
+        for s in bucket:
+            all_feature_headers.add(s.header)
+    assert "P0: Canvas" in all_feature_headers
+    assert "P1: AI" in all_feature_headers
+
+
+# --- Evaluation merging ---
+
+def test_merge_evaluations_combines_criteria():
+    eval_a = (
+        "#### Visual Design\n"
+        "- [x] Background is #080809 | screenshots/a.png\n"
+        "- [ ] Noise grain missing ← FAIL | screenshots/b.png\n"
+        "\n### Quality Assessment — Frontend\n"
+        "| Criterion | Verdict |\n| Design Quality | PASS |\n"
+        "### Verdict: FAIL\n"
+        "### Required Changes\n1. Add noise grain\n"
+    )
+    eval_b = (
+        "#### P0: Canvas\n"
+        "- [x] Create playlist works | screenshots/c.png\n"
+        "- [x] Delete shows confirmation | screenshots/d.png\n"
+        "- [ ] Drag broken ← FAIL | screenshots/e.png\n"
+    )
+    merged = merge_evaluations([eval_a, eval_b], lead_index=0)
+    # All 5 criteria present
+    assert "- [x] Background" in merged
+    assert "- [ ] Noise grain" in merged
+    assert "- [x] Create playlist" in merged
+    assert "- [ ] Drag broken" in merged
+    # Pass rate recomputed: 3/5
+    assert "3/5" in merged
+    # Quality Assessment from lead
+    assert "Design Quality" in merged
+    assert "Verdict: FAIL" in merged
+    assert "Add noise grain" in merged
+
+
+def test_merge_evaluations_single():
+    """Single evaluator returns text unchanged."""
+    text = "- [x] Works\n### Verdict: PASS"
+    assert merge_evaluations([text]) == text
+
+
+# --- Parallel evaluation dispatch ---
+
+@pytest.mark.anyio
+async def test_evaluate_dispatches_single_for_small_criteria():
+    """Small criteria set → single evaluator path."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Full Build")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        # Small criteria — single section, should route to _evaluate_single
+        with open(contract_path, "w") as f:
+            f.write("### Login\n- [ ] User can log in\n- [ ] Data persists")
+
+        single_called = False
+        original_single = orch._evaluate_single
+
+        async def mock_single(s, cp):
+            nonlocal single_called
+            single_called = True
+            return True
+
+        with patch.object(orch, "_evaluate_single", side_effect=mock_single):
+            await orch.evaluate(sprint, contract_path)
+
+        assert single_called
+
+
+@pytest.mark.anyio
+async def test_evaluate_dispatches_parallel_for_many_sections():
+    """Multiple sections with enough criteria → parallel path."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Full Build")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        # Many sections with enough criteria to trigger parallel
+        criteria = "\n".join([
+            "### Visual Design\n" + "\n".join(f"- [ ] Design criterion {i}" for i in range(10)),
+            "### Responsive Design\n" + "\n".join(f"- [ ] Responsive criterion {i}" for i in range(5)),
+            "### P0: Feature A\n" + "\n".join(f"- [ ] Feature A criterion {i}" for i in range(15)),
+            "### P1: Feature B\n" + "\n".join(f"- [ ] Feature B criterion {i}" for i in range(12)),
+            "### P2: Feature C\n" + "\n".join(f"- [ ] Feature C criterion {i}" for i in range(10)),
+        ])
+        with open(contract_path, "w") as f:
+            f.write(criteria)
+
+        parallel_called = False
+
+        async def mock_parallel(s, cp, buckets):
+            nonlocal parallel_called
+            parallel_called = True
+            assert len(buckets) >= 2  # at least lead + 1 feature bucket
+            return True
+
+        with patch.object(orch, "_evaluate_parallel", side_effect=mock_parallel):
+            await orch.evaluate(sprint, contract_path)
+
+        assert parallel_called
+
+
+@pytest.mark.anyio
+async def test_parallel_eval_handles_crash():
+    """If one parallel evaluator crashes, its criteria are marked FAIL."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Full Build")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+
+        # Create buckets manually
+        buckets = [
+            [CriteriaSection("Visual Design", "### Visual Design\n- [ ] BG color\n- [ ] Font", 2)],
+            [CriteriaSection("P0: Canvas", "### P0: Canvas\n- [ ] Pan\n- [ ] Zoom", 2)],
+        ]
+
+        call_count = 0
+
+        async def mock_run_eval(evaluator_id, is_lead, criteria_text, screenshots_dir, prev_eval_section):
+            nonlocal call_count
+            call_count += 1
+            if evaluator_id == 0:
+                return "- [x] BG color | s/a.png\n- [x] Font | s/b.png\n### Verdict: FAIL"
+            raise RuntimeError("Evaluator 1 crashed")
+
+        with patch.object(orch, "_run_single_evaluator", side_effect=mock_run_eval), \
+             patch.object(orch, "server"):
+            passed = await orch._evaluate_parallel(sprint, contract_path, buckets)
+
+        assert passed is False
+        assert call_count == 2  # both were attempted
+
+        # Crashed evaluator's criteria should be marked FAIL in evaluation.md
+        eval_path = os.path.join(sprint_dir, "evaluation.md")
+        with open(eval_path) as f:
+            content = f.read()
+        assert "evaluator crashed" in content

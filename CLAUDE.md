@@ -40,7 +40,7 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 3. **Generator reviews criteria** (`_review_criteria()`) — reads and acknowledges criteria before building, starts continuous session
 4. **Generator** builds entire app in `output/{slug}/` with TOOLS_FULL, using criteria as checklist
 5. **Smoke test** — HTTP health check before expensive eval. If app crashes, skip eval and feed error directly to Generator
-6. **Evaluator** tests running app via Playwright MCP against each criterion individually. Receives previous evaluation for regression comparison (REGRESSION/FIXED/PERSISTENT labels)
+6. **Evaluator** tests running app via Playwright MCP. **Parallel evaluation**: criteria split by `###` section into N evaluator agents running concurrently via `asyncio.gather()`. Lead evaluator handles Visual Design + Quality Assessment. Results merged into single evaluation.md. Falls back to single evaluator for small criteria sets. Receives previous evaluation for regression comparison (REGRESSION/FIXED/PERSISTENT labels)
 7. On FAIL: feedback → Generator retries. Adaptive max attempts (first eval >90% → limit to 3 more). Regression detection resets Generator session on >20pp score drop. Timeout/InfraError stops retries immediately.
 8. If backend passes but frontend design fails → **design refinement loop** (up to 10 iterations)
 9. `comms/` artifacts archived to `output/{slug}/.harness/`

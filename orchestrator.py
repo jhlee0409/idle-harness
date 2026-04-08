@@ -1,3 +1,4 @@
+import asyncio
 import anyio
 import os
 import re
@@ -6,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 
 from cli import call_agent, AgentError, AgentTimeout, InfraError, fmt_tokens, fmt_elapsed
 from config import (
@@ -68,6 +70,151 @@ def _parse_eval_score(text: str) -> tuple[int, int]:
     failed = len(re.findall(r"^\s*- \[ \] ", text, re.MULTILINE))
     total = passed + failed
     return passed, total
+
+
+@dataclass
+class CriteriaSection:
+    """A ### section of testable criteria."""
+    header: str
+    raw_text: str
+    criteria_count: int
+
+
+def parse_criteria_sections(criteria_text: str) -> list[CriteriaSection]:
+    """Split criteria text into sections by ### headers."""
+    sections = []
+    current_header = ""
+    current_lines: list[str] = []
+
+    for line in criteria_text.split("\n"):
+        if line.startswith("### "):
+            # Save previous section
+            if current_header:
+                raw = "\n".join(current_lines)
+                count = len(_CRITERIA_RE.findall(raw))
+                if count > 0:
+                    sections.append(CriteriaSection(
+                        header=current_header, raw_text=raw, criteria_count=count,
+                    ))
+            current_header = line[4:].strip()
+            current_lines = [line]
+        else:
+            current_lines.append(line)
+
+    # Last section
+    if current_header:
+        raw = "\n".join(current_lines)
+        count = len(_CRITERIA_RE.findall(raw))
+        if count > 0:
+            sections.append(CriteriaSection(
+                header=current_header, raw_text=raw, criteria_count=count,
+            ))
+
+    return sections
+
+
+# Cross-cutting sections that belong to the lead evaluator
+_LEAD_SECTION_KEYWORDS = {
+    "visual design", "responsive", "ui states", "error handling",
+    "motion", "animation", "landing",
+}
+
+
+def _is_lead_section(header: str) -> bool:
+    lower = header.lower()
+    return any(kw in lower for kw in _LEAD_SECTION_KEYWORDS)
+
+
+def assign_sections_to_evaluators(
+    sections: list[CriteriaSection],
+    target_per_evaluator: int = 25,
+) -> list[list[CriteriaSection]]:
+    """Distribute sections into N evaluator buckets.
+
+    Bucket 0 is the lead evaluator (gets cross-cutting + quality assessment).
+    Returns [[lead_sections], [bucket1], [bucket2], ...].
+    Returns a single bucket if only 1 section or few criteria.
+    """
+    if len(sections) <= 1:
+        return [sections]
+
+    total = sum(s.criteria_count for s in sections)
+    if total <= target_per_evaluator:
+        return [sections]
+
+    # Separate lead sections from feature sections
+    lead_sections = [s for s in sections if _is_lead_section(s.header)]
+    feature_sections = [s for s in sections if not _is_lead_section(s.header)]
+
+    # Calculate how many feature evaluators we need
+    feature_total = sum(s.criteria_count for s in feature_sections)
+    n_feature = max(1, round(feature_total / target_per_evaluator))
+    n_feature = min(n_feature, 5)  # cap at 5 feature evaluators
+
+    # Distribute feature sections round-robin
+    buckets: list[list[CriteriaSection]] = [[] for _ in range(n_feature)]
+    bucket_counts = [0] * n_feature
+    for section in feature_sections:
+        # Put in the lightest bucket
+        min_idx = bucket_counts.index(min(bucket_counts))
+        buckets[min_idx].append(section)
+        bucket_counts[min_idx] += section.criteria_count
+
+    # Lead bucket is index 0 in the final result
+    return [lead_sections] + buckets
+
+
+def merge_evaluations(
+    eval_texts: list[str],
+    lead_index: int = 0,
+) -> str:
+    """Merge N evaluator outputs into single evaluation.md.
+
+    - Feature Testing checkboxes: concatenated from all evaluators
+    - Quality Assessment + Verdict + Required Changes: from lead evaluator
+    - Feature Pass Rate: recomputed from merged checkboxes
+    """
+    if len(eval_texts) == 1:
+        return eval_texts[0]
+
+    # Extract feature testing lines (checkboxes) from all evaluators
+    all_criteria_lines = []
+    all_section_blocks = []
+    for i, text in enumerate(eval_texts):
+        if not text:
+            continue
+        # Collect all lines with checkboxes and their section headers
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("### ") or stripped.startswith("#### "):
+                all_section_blocks.append(line)
+            elif re.match(r"^\s*- \[[x ]\] ", stripped):
+                all_criteria_lines.append(line)
+                all_section_blocks.append(line)
+
+    # Get Quality Assessment, Evidence, Verdict, Required Changes from lead
+    lead_text = eval_texts[lead_index] if lead_index < len(eval_texts) else ""
+    quality_section = ""
+    in_quality = False
+    for line in lead_text.split("\n"):
+        if re.match(r"^#{1,4}\s*(Quality Assessment|Evidence Audit|Regression Analysis|Verdict|Required Changes)", line):
+            in_quality = True
+        if in_quality:
+            quality_section += line + "\n"
+
+    # Recompute pass rate
+    passed = len([l for l in all_criteria_lines if re.match(r"^\s*- \[x\] ", l.strip())])
+    total = len(all_criteria_lines)
+    pct = int(passed / total * 100) if total > 0 else 0
+
+    # Build merged output
+    merged = "## Application Evaluation (Parallel)\n\n"
+    merged += "### Feature Testing\n\n"
+    merged += "\n".join(all_section_blocks) + "\n\n"
+    merged += f"### Feature Pass Rate: {passed}/{total} ({pct}%)\n\n"
+    merged += quality_section
+
+    return merged
 
 
 def _parse_automation_limited(text: str) -> tuple[int, int]:
@@ -526,6 +673,203 @@ class Orchestrator:
                          f"Generator may not be honestly self-testing.")
 
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
+        """Dispatch to parallel or single evaluation based on criteria structure."""
+        if contract_path not in self._cached_contracts:
+            self._cached_contracts[contract_path] = _read_file(contract_path)
+        contract = self._cached_contracts[contract_path]
+
+        sections = parse_criteria_sections(contract)
+        buckets = assign_sections_to_evaluators(sections)
+
+        if len(buckets) > 1:
+            return await self._evaluate_parallel(sprint, contract_path, buckets)
+        return await self._evaluate_single(sprint, contract_path)
+
+    async def _run_single_evaluator(
+        self, evaluator_id: int, is_lead: bool,
+        criteria_text: str, screenshots_dir: str,
+        prev_eval_section: str,
+    ) -> str:
+        """Run one evaluator agent. Returns evaluation text."""
+        os.makedirs(screenshots_dir, exist_ok=True)
+
+        if is_lead:
+            prompt = (
+                f"Evaluate this SUBSET of the application (you are evaluator {evaluator_id}, "
+                f"the LEAD evaluator responsible for Quality Assessment).\n\n"
+                f"Your criteria:\n{criteria_text}\n\n"
+                f"Product spec (for design quality assessment):\n{self.spec}\n\n"
+                f"Test each criterion. Take screenshots to {screenshots_dir}/.\n"
+                f"Write BOTH Feature Testing checkboxes AND the full Quality Assessment "
+                f"(Frontend + Backend tables, Evidence, Evidence Audit, Verdict, Required Changes).\n"
+                f"Navigate to {CONFIG['dev_server_url']}."
+                f"{prev_eval_section}"
+            )
+        else:
+            prompt = (
+                f"Evaluate this SUBSET of the application (you are evaluator {evaluator_id}).\n\n"
+                f"Your criteria:\n{criteria_text}\n\n"
+                f"Product spec (for context):\n{self.spec}\n\n"
+                f"Test each criterion. Take screenshots to {screenshots_dir}/.\n"
+                f"Write Feature Testing checkboxes ONLY (no Quality Assessment — "
+                f"another evaluator handles that).\n"
+                f"Navigate to {CONFIG['dev_server_url']}."
+                f"{prev_eval_section}"
+            )
+
+        result = await call_agent(
+            system_prompt=self.evaluator_prompt,
+            user_prompt=prompt,
+            allowed_tools=TOOLS_EVALUATOR,
+            mcp_servers=CONFIG.get("mcp_servers"),
+            cwd=self.root,
+            timeout=CONFIG["agent_timeout_eval"],
+            model=resolve_agent_model("evaluator"),
+        )
+        self._track_cost(result, "eval")
+
+        # Preserve disk evaluation if more detailed (same logic as single eval)
+        agent_response = result.result
+        # Check if evaluator wrote to a file in screenshots_dir parent
+        eval_file = os.path.join(os.path.dirname(screenshots_dir), "evaluation.md")
+        disk_eval = _read_file_optional(eval_file)
+        _, response_criteria = _parse_eval_score(agent_response)
+        _, disk_criteria = _parse_eval_score(disk_eval)
+
+        if disk_criteria > response_criteria:
+            return disk_eval
+        return agent_response
+
+    async def _evaluate_parallel(
+        self, sprint: Sprint, contract_path: str,
+        buckets: list[list[CriteriaSection]],
+    ) -> bool:
+        """Run N evaluator agents in parallel, merge results."""
+        sprint_dir = self._sprint_dir(sprint)
+        eval_path = os.path.join(sprint_dir, "evaluation.md")
+
+        self.state.increment(sprint.number, "eval")
+        attempt = self.state.get_sprint_attempt(sprint.number, "eval")
+        label = self._sprint_label(sprint)
+
+        n_evaluators = len(buckets)
+        criteria_counts = [sum(s.criteria_count for s in b) for b in buckets]
+        _log("Evaluator", f"{label} — Parallel evaluation: {n_evaluators} evaluators "
+             f"({', '.join(str(c) for c in criteria_counts)} criteria each)")
+
+        # Previous evaluation for regression comparison
+        prev_eval = ""
+        if attempt > 1:
+            prev_path = os.path.join(sprint_dir, f"evaluation_attempt_{attempt - 1}.md")
+            prev_eval = _read_file_optional(prev_path)
+
+        # Build criteria text per evaluator
+        evaluator_criteria = []
+        for bucket in buckets:
+            text = "\n\n".join(s.raw_text for s in bucket)
+            evaluator_criteria.append(text)
+
+        # Build previous eval section per evaluator (filtered to matching sections)
+        prev_sections = []
+        for bucket in buckets:
+            if not prev_eval:
+                prev_sections.append("")
+                continue
+            section_hint = (
+                f"\n\n## Previous Evaluation (attempt {attempt - 1})\n\n"
+                f"Compare your findings against the previous evaluation. "
+                f"Label regressions (was PASS, now FAIL), fixes, persistent failures.\n\n"
+                f"Previous evaluation:\n{prev_eval}"
+            )
+            prev_sections.append(section_hint)
+
+        # Start server once for all evaluators
+        _log("Evaluator", f"{label} — Starting servers...")
+        self.server.start()
+        _log("Evaluator", f"{label} — Testing (attempt {attempt}, {n_evaluators} parallel)...")
+        start = time.time()
+
+        try:
+            # Launch all evaluators concurrently
+            tasks = []
+            for i in range(n_evaluators):
+                screenshots_dir = os.path.join(sprint_dir, "screenshots", f"eval-{i}")
+                tasks.append(
+                    self._run_single_evaluator(
+                        evaluator_id=i,
+                        is_lead=(i == 0),
+                        criteria_text=evaluator_criteria[i],
+                        screenshots_dir=screenshots_dir,
+                        prev_eval_section=prev_sections[i],
+                    )
+                )
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Collect successful results, mark crashes as empty
+            eval_texts = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    _log("Evaluator", f"{label} — Evaluator {i} CRASHED: {result}")
+                    # Generate FAIL entries for crashed evaluator's criteria
+                    fail_lines = []
+                    for section in buckets[i]:
+                        fail_lines.append(f"#### {section.header}")
+                        for line in section.raw_text.split("\n"):
+                            if re.match(r"^\s*- \[[x ]\] ", line.strip()):
+                                criterion = re.sub(r"^\s*- \[[x ]\] ", "", line.strip())
+                                fail_lines.append(f"- [ ] {criterion} ← FAIL (evaluator crashed)")
+                    eval_texts.append("\n".join(fail_lines))
+                else:
+                    eval_texts.append(result)
+                    elapsed_i = int(time.time() - start)
+                    _log("Evaluator", f"{label} — Evaluator {i} complete ({elapsed_i}s)")
+
+            # Merge all results
+            best_eval = merge_evaluations(eval_texts, lead_index=0)
+
+            with open(eval_path, "w") as f:
+                f.write(best_eval)
+            _save_agent_response(
+                sprint_dir, f"evaluation_attempt_{attempt}.md", best_eval,
+            )
+        finally:
+            _log("Evaluator", f"{label} — Stopping servers...")
+            self.server.stop()
+
+        elapsed = int(time.time() - start)
+        self.state.add_sprint_timing(sprint.number, "eval", elapsed)
+
+        passed = _check_verdict_pass(best_eval)
+
+        if passed:
+            limited, total = _parse_automation_limited(best_eval)
+            if total > 0 and limited / total > 0.10:
+                _log("Evaluator",
+                     f"{label} — Verdict was PASS but {limited}/{total} criteria "
+                     f"({int(limited/total*100)}%) marked automation-limited. "
+                     f"Overriding to FAIL.")
+                passed = False
+
+        stats = f"{elapsed}s, {n_evaluators} evaluators"
+        if passed:
+            _log("Evaluator", f"{label} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
+        else:
+            _log("Evaluator", f"{label} — {_C.RED}{_C.BOLD}FAIL{_C.RESET} ({stats})")
+        _print_eval_summary(best_eval)
+        if not passed:
+            _print_required_changes(best_eval)
+
+        eval_passed, eval_total = _parse_eval_score(best_eval)
+        if eval_total > 0:
+            pct = int(eval_passed / eval_total * 100)
+            self.state.add_eval_score(sprint.number, attempt, eval_passed, eval_total)
+            _log("Evaluator", f"{label} — Score: {eval_passed}/{eval_total} ({pct}%)")
+
+        return passed
+
+    async def _evaluate_single(self, sprint: Sprint, contract_path: str) -> bool:
+        """Single evaluator (original behavior, for small criteria sets)."""
         # Use cached contract (GAN principle — same as build())
         if contract_path not in self._cached_contracts:
             self._cached_contracts[contract_path] = _read_file(contract_path)
