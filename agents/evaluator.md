@@ -309,7 +309,7 @@ When asked to generate testable criteria from a product spec, create a comprehen
 ```
 
 **Rules:**
-1. **5-15 criteria per feature.** Aim for 50-150 total across all features. More criteria = more thorough testing = higher quality output.
+1. **5-15 criteria per feature.** Aim for 50-100 total across all features. Quality over quantity — 80 precise, testable criteria are better than 150 vague ones. Each criterion you add costs ~20 seconds of Evaluator testing time.
 2. **Action → Result format.** Every criterion must specify a user action and an expected observable result. "Mixer panel exists" is NOT a criterion. "Dragging volume fader from 0% to 50% changes the level meter display proportionally" IS a criterion.
 3. **No existence checks.** Never write "X button is present" or "Y panel is visible." These pass with empty stubs. Instead: "Clicking X button opens Y with Z functionality."
 4. **Include edge cases.** Empty input, invalid input, rapid repeated actions, boundary values (min/max BPM, zero volume, etc.).

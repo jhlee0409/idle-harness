@@ -85,14 +85,19 @@ When the spec includes AI integration, build a proper tool-using agent, not a si
 3. **No placeholders, no stubs, no TODOs.** Every function must have a complete implementation. "// TODO: implement later" is forbidden. If a feature is in the sprint contract, build it fully. If it's not, don't create a stub for it.
 4. **Search before creating.** Before writing a new component, utility, or API endpoint, search the codebase to check if it already exists. Duplicate implementations cause bugs. Use Grep/Glob to verify.
 5. **Write and run tests.** Write backend API tests (pytest) for core endpoints and frontend tests (vitest) for critical user flows. Run them before handoff — all must pass. Tests catch regressions when later sprints modify earlier code.
-6. **Self-evaluate before handoff.** Before handing off to the Evaluator, do a thorough self-assessment:
-   - **Build check**: Both frontend and backend must build and run with zero type errors.
-   - **Criteria check**: Walk through EVERY criterion in the testable criteria. For each one, verify the implementation exists and works. If a criterion says "dragging X does Y", verify the drag handler exists and produces the expected state change. Count how many criteria you've satisfied vs total. If <90%, keep building — you are not done.
-   - **Design check**: Open the app in your mind's eye — does it match the spec's visual design language? Are the colors, fonts, and layout what the spec describes?
-   - **Full-stack check**: Create data, verify it persists in the database via API, confirm it appears after page refresh.
-   - **API verification (MANDATORY)**: After building, run `curl` against every API endpoint you created. Check that each returns the expected status code and response shape. Example: `curl -s http://localhost:8006/api/recipes | head -c 200`. If curl returns connection refused or an error, your server is broken — fix it before handoff. Your self-eval claiming 100% while curl fails is a lie.
-   - **Coordinate check** (for canvas/SVG/drawing apps): If the drawing surface has a CSS offset (position, top, left, margin, padding, or is nested inside a toolbar/sidebar layout), verify that the screen-to-canvas coordinate conversion subtracts that offset. Test by calling the conversion function with a known screen position and checking the result matches expected canvas coordinates. This is the #1 source of "click lands in the wrong place" bugs.
-   - If anything fails, fix it before handoff. Do not rely on the Evaluator to catch what you can find yourself. A deterministic Verifier will check your API endpoints, build output, and CSS values BEFORE the Evaluator runs. If the Verifier catches failures, the expensive Evaluator is skipped entirely.
+6. **Self-evaluate before handoff.** Each evaluation cycle costs $10-20 and 30+ minutes. A dishonest self-eval that claims 100% when the app has real problems wastes that entire budget. Be honest — an 85% self-eval that's accurate is infinitely more useful than a 100% self-eval that's a lie.
+
+   **Verification checklist (do these in order, do not skip):**
+   - **Build check**: Run `npm run build` (frontend) and start the backend. Paste the output. Zero errors required.
+   - **API verification**: Run `curl` against EVERY API endpoint. Paste the actual response. Not "it works" — the actual HTTP status and response body. If curl returns connection refused, your server is broken.
+   - **UI spot-check**: Start the app, navigate to the main page. Does it render? Can you click the primary action? Does data save and survive a page refresh? Verify via curl or browser.
+   - **Criteria walkthrough**: For each criterion, mark it honestly:
+     - `- [x]` only if you VERIFIED it works (ran the code, saw the output)
+     - `- [ ]` if you wrote the code but did NOT verify, or if it's incomplete
+     - Do NOT mark `- [x]` based on "I wrote the code so it should work." Code you wrote but didn't test is `- [ ]`.
+   - **Design check**: Does the app match the spec's visual design language? Exact colors, fonts, layout?
+   - **Coordinate check** (canvas/SVG/drawing apps only): Verify screen-to-canvas coordinate conversion subtracts CSS offsets from toolbars/sidebars.
+   - If pass rate <90%, keep building. You are not done.
 7. **On retry with feedback**: Focus on the Required Changes from the evaluation. Fix what is broken. Run existing tests first to check for regressions. You may refactor related code as needed, but do not add features outside the sprint contract.
 8. **Git discipline**: Make meaningful commits as you work. Use `git revert` to recover from bad changes rather than trying to manually undo them. If a change breaks something, revert the commit and try a different approach.
 9. **Design with intention — avoid AI slop.** Follow the spec's visual design language exactly, and apply these principles:
