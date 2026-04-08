@@ -728,17 +728,10 @@ class Orchestrator:
         )
         self._track_cost(result, "eval")
 
-        # Preserve disk evaluation if more detailed (same logic as single eval)
-        agent_response = result.result
-        # Check if evaluator wrote to a file in screenshots_dir parent
-        eval_file = os.path.join(os.path.dirname(screenshots_dir), "evaluation.md")
-        disk_eval = _read_file_optional(eval_file)
-        _, response_criteria = _parse_eval_score(agent_response)
-        _, disk_criteria = _parse_eval_score(disk_eval)
-
-        if disk_criteria > response_criteria:
-            return disk_eval
-        return agent_response
+        # In parallel mode, use the agent's text response directly.
+        # Do NOT check disk — all parallel evaluators can overwrite the same
+        # evaluation.md via Write tool, causing criteria loss.
+        return result.result
 
     async def _evaluate_parallel(
         self, sprint: Sprint, contract_path: str,
@@ -806,19 +799,65 @@ class Orchestrator:
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Collect successful results, mark crashes as empty
+            # Progressive fallback: if ALL evaluators crashed, retry with fewer
+            all_crashed = all(isinstance(r, Exception) for r in results)
+            if all_crashed:
+                crash_msg = str(results[0])[:200]
+                _log("Evaluator", f"{label} — ALL {n_evaluators} evaluators crashed: {crash_msg}")
+
+                # Try with half
+                fallback_n = max(1, n_evaluators // 2)
+                if fallback_n < n_evaluators:
+                    _log("Evaluator", f"{label} — Retrying with {fallback_n} evaluators...")
+                    merged_buckets = [[] for _ in range(fallback_n)]
+                    for i, bucket in enumerate(buckets):
+                        merged_buckets[i % fallback_n].extend(bucket)
+                    merged_criteria = ["\n\n".join(s.raw_text for s in b) for b in merged_buckets]
+
+                    fb_tasks = []
+                    for i in range(fallback_n):
+                        fb_dir = os.path.join(sprint_dir, "screenshots", f"eval-fb-{i}")
+                        fb_tasks.append(self._run_single_evaluator(
+                            evaluator_id=i, is_lead=(i == 0),
+                            criteria_text=merged_criteria[i],
+                            screenshots_dir=fb_dir,
+                            prev_eval_section=prev_sections[i] if i < len(prev_sections) else "",
+                        ))
+                    results = await asyncio.gather(*fb_tasks, return_exceptions=True)
+                    all_crashed = all(isinstance(r, Exception) for r in results)
+                    buckets = merged_buckets
+
+                # Still all crashed — single evaluator fallback
+                if all_crashed:
+                    _log("Evaluator", f"{label} — Fallback to single evaluator...")
+                    all_criteria = "\n\n".join(s.raw_text for b in buckets for s in b)
+                    fb_dir = os.path.join(sprint_dir, "screenshots", "eval-single-fb")
+                    try:
+                        single_result = await self._run_single_evaluator(
+                            evaluator_id=0, is_lead=True,
+                            criteria_text=all_criteria, screenshots_dir=fb_dir,
+                            prev_eval_section=prev_sections[0] if prev_sections else "",
+                        )
+                        results = [single_result]
+                        all_sections = [s for b in buckets for s in b]
+                        buckets = [all_sections]
+                    except Exception as exc:
+                        _log("Evaluator", f"{label} — All fallbacks exhausted: {exc}")
+                        raise AgentError(f"All evaluators crashed including fallbacks: {crash_msg}")
+
+            # Collect successful results, mark crashes as FAIL
             eval_texts = []
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     _log("Evaluator", f"{label} — Evaluator {i} CRASHED: {result}")
-                    # Generate FAIL entries for crashed evaluator's criteria
                     fail_lines = []
-                    for section in buckets[i]:
-                        fail_lines.append(f"#### {section.header}")
-                        for line in section.raw_text.split("\n"):
-                            if re.match(r"^\s*- \[[x ]\] ", line.strip()):
-                                criterion = re.sub(r"^\s*- \[[x ]\] ", "", line.strip())
-                                fail_lines.append(f"- [ ] {criterion} ← FAIL (evaluator crashed)")
+                    if i < len(buckets):
+                        for section in buckets[i]:
+                            fail_lines.append(f"#### {section.header}")
+                            for line in section.raw_text.split("\n"):
+                                if re.match(r"^\s*- \[[x ]\] ", line.strip()):
+                                    criterion = re.sub(r"^\s*- \[[x ]\] ", "", line.strip())
+                                    fail_lines.append(f"- [ ] {criterion} ← FAIL (evaluator crashed)")
                     eval_texts.append("\n".join(fail_lines))
                 else:
                     eval_texts.append(result)
@@ -1120,8 +1159,16 @@ class Orchestrator:
             return
 
         current = scores[-1]
+        # Skip if current score is from a crash (no criteria evaluated)
+        if current.get("total", 0) == 0:
+            return
+
         previous = scores[-2]
-        best_pct = max(s["pct"] for s in scores)
+        # Only consider scores with actual criteria for best calculation
+        valid_scores = [s for s in scores if s.get("total", 0) > 0]
+        if len(valid_scores) < 2:
+            return
+        best_pct = max(s["pct"] for s in valid_scores)
 
         # Catastrophic regression: >20pp drop from best
         drop_from_best = best_pct - current["pct"]
@@ -1144,9 +1191,16 @@ class Orchestrator:
     async def _retry_build_eval(self, sprint: Sprint, contract_path: str, label: str):
         """Shared retry loop for both full and simple modes."""
         sprint_passed = False
+        consecutive_crashes = 0
         for attempt in range(CONFIG["max_build_attempts"]):
+            # Cooldown after consecutive crashes (likely infrastructure issue)
+            if consecutive_crashes >= 3:
+                cooldown = min(60 * (2 ** (consecutive_crashes - 3)), 300)
+                _log("Harness", f"{label} — {consecutive_crashes} consecutive crashes. "
+                     f"Cooling down {cooldown}s (likely infrastructure issue).")
+                await asyncio.sleep(cooldown)
+
             try:
-                # Smoke test: if app is buildable but crashing, detect early
                 await self.build(sprint, contract_path)
 
                 # Post-build smoke test before expensive evaluation
@@ -1154,7 +1208,6 @@ class Orchestrator:
                 if not smoke_ok:
                     _log("Harness", f"{label} — SMOKE TEST FAIL: {smoke_msg}")
                     _log("Harness", f"{label} — Skipping Evaluator (app not functional)")
-                    # Write smoke test failure as evaluation feedback for Generator
                     sprint_dir = self._sprint_dir(sprint)
                     eval_path = os.path.join(sprint_dir, "evaluation.md")
                     with open(eval_path, "w") as f:
@@ -1167,14 +1220,15 @@ class Orchestrator:
                             f"The Evaluator cannot test a broken app.\n"
                         )
                     passed = False
+                    consecutive_crashes = 0
                 else:
-                    # Verifier: deterministic checks before expensive LLM eval
                     vresult = await self.verify(sprint, contract_path)
                     if vresult is not None and not vresult.overall_pass:
                         _log("Harness", f"{label} — Verifier FAIL, skipping Evaluator (saving time + cost)")
                         passed = False
                     else:
                         passed = await self.evaluate(sprint, contract_path)
+                    consecutive_crashes = 0
             except InfraError as exc:
                 _log("Harness", f"{label} attempt {attempt + 1} INFRA ERROR: {exc}")
                 _log("Harness", f"Infrastructure error — rebuilding won't help. Stopping retries for {label}.")
@@ -1188,17 +1242,19 @@ class Orchestrator:
             except AgentError as exc:
                 _log("Harness", f"{label} attempt {attempt + 1} error: {exc}")
                 passed = False
-                # Agent crash = reset session (existing behavior preserved)
+                consecutive_crashes += 1
             except RuntimeError as exc:
                 _log("Harness", f"{label} attempt {attempt + 1} server error: {exc}")
                 passed = False
+                consecutive_crashes += 1
 
             if passed:
                 sprint_passed = True
                 break
 
-            # Regression detection: reset Generator session if score is declining
-            self._check_regression(sprint, label)
+            # Regression detection: skip after crashes (no valid score to compare)
+            if consecutive_crashes == 0:
+                self._check_regression(sprint, label)
 
             if attempt == CONFIG["max_build_attempts"] - 1:
                 # Delegate to user: continue or abort? (raises UserAbort)
