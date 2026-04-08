@@ -101,6 +101,33 @@ class HarnessState:
         data["timings"]["plan"] = seconds
         self._save(data)
 
+    def add_eval_score(self, sprint_num: int, attempt: int, passed: int, total: int):
+        """Record eval score for regression detection."""
+        data = self.load()
+        scores = data.setdefault("eval_scores", [])
+        pct = int(passed / total * 100) if total > 0 else 0
+        scores.append({
+            "sprint": sprint_num,
+            "attempt": attempt,
+            "passed": passed,
+            "total": total,
+            "pct": pct,
+        })
+        self._save(data)
+
+    def get_eval_scores(self, sprint_num: int | None = None) -> list[dict]:
+        """Get eval score history, optionally filtered by sprint."""
+        data = self.load()
+        scores = data.get("eval_scores", [])
+        if sprint_num is not None:
+            scores = [s for s in scores if s["sprint"] == sprint_num]
+        return scores
+
+    def get_last_eval_score(self, sprint_num: int) -> dict | None:
+        """Get the most recent eval score for a sprint."""
+        scores = self.get_eval_scores(sprint_num)
+        return scores[-1] if scores else None
+
     def add_sprint_timing(self, sprint_num: int, phase: str, seconds: int):
         data = self.load()
         sprints = data["timings"]["sprints"]

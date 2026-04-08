@@ -189,11 +189,28 @@ Use this exact format. Note: verdicts come BEFORE evidence to prevent rationaliz
 
 If "Criteria PASSED without screenshot" > 0, go back and either take the screenshot or change the verdict to FAIL. Do NOT proceed to the Verdict until this number is 0.
 
+### Regression Analysis (if previous evaluation was provided)
+- **Regressions** (was PASS, now FAIL): [list — these are the most critical]
+- **Fixed** (was FAIL, now PASS): [list]
+- **Persistent failures** (was FAIL, still FAIL): [list]
+- **Net change**: [+N fixed, -M regressed]
+
+If regressions > 0, this is a serious problem. The Generator broke things that previously worked. Call this out prominently in Required Changes.
+
 ### Verdict: PASS / FAIL
 
 ### Required Changes (if FAIL)
-1. [Specific, actionable change — what is wrong and what "fixed" looks like]
-2. [Each item must be independently verifiable]
+For each change, include:
+1. **What is wrong** — the specific failure observed
+2. **What "fixed" looks like** — concrete, verifiable definition of done
+3. **Blast radius** — "fixing this unblocks N other criteria" or "isolated fix"
+4. **Priority** — REGRESSION (broke something that worked) > PERSISTENT (never worked) > NEW (first-time failure)
+
+Order by priority: regressions first, then persistent failures sorted by blast radius (highest first).
+
+Example:
+1. [REGRESSION] Sidebar click handler is broken — clicking a playlist does nothing. **Blast radius: fixes this + unblocks 23 criteria** that depend on the editor opening (track list, delete, search, etc.). Fix: restore the onClick handler that was removed during refactoring.
+2. [PERSISTENT] Noise grain overlay missing — background is flat #080809 with no texture. **Isolated fix.** Add SVG feTurbulence filter at 3% opacity on body::before.
 ```
 
 ## Calibration Examples

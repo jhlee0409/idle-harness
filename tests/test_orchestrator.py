@@ -339,7 +339,8 @@ async def test_retry_stops_on_infra_error():
 
         with patch.object(orch, "build", side_effect=mock_build), \
              patch.object(orch, "evaluate", side_effect=mock_evaluate), \
-             patch.object(orch, "verify", AsyncMock(return_value=None)):
+             patch.object(orch, "verify", AsyncMock(return_value=None)), \
+             patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))):
             passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
         assert passed is False
@@ -373,6 +374,7 @@ async def test_retry_asks_user_on_max_failures_continue():
         with patch.object(orch, "build", mock_build), \
              patch.object(orch, "evaluate", mock_eval), \
              patch.object(orch, "verify", AsyncMock(return_value=None)), \
+             patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))), \
              patch("orchestrator.input", return_value="c"):  # continue
             passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
@@ -404,6 +406,7 @@ async def test_retry_asks_user_on_max_failures_abort():
         with patch.object(orch, "build", mock_build), \
              patch.object(orch, "evaluate", mock_eval), \
              patch.object(orch, "verify", AsyncMock(return_value=None)), \
+             patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))), \
              patch("orchestrator.input", return_value="a"):  # abort
             with pytest.raises(UserAbort):
                 await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
@@ -538,7 +541,8 @@ async def test_run_simple_generates_criteria():
         with patch.object(orch, "generate_criteria", side_effect=mock_generate_criteria), \
              patch.object(orch, "build", side_effect=mock_build), \
              patch.object(orch, "evaluate", side_effect=mock_evaluate), \
-             patch.object(orch, "verify", AsyncMock(return_value=None)):
+             patch.object(orch, "verify", AsyncMock(return_value=None)), \
+             patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))):
             await orch._run_simple()
 
         assert criteria_generated
@@ -656,7 +660,8 @@ async def test_retry_stops_on_timeout():
 
         with patch.object(orch, "build", side_effect=mock_build), \
              patch.object(orch, "evaluate", side_effect=mock_evaluate), \
-             patch.object(orch, "verify", AsyncMock(return_value=None)):
+             patch.object(orch, "verify", AsyncMock(return_value=None)), \
+             patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))):
             passed = await orch._retry_build_eval(sprint, contract_path, "Sprint 1")
 
         assert passed is False
@@ -741,6 +746,7 @@ async def test_verifier_fail_skips_evaluate():
         with patch.object(orch, "build", side_effect=mock_build), \
              patch.object(orch, "evaluate", side_effect=mock_evaluate), \
              patch.object(orch, "verify", side_effect=mock_verify), \
+             patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))), \
              patch.dict("config.CONFIG", {"max_build_attempts": 1}), \
              patch("orchestrator._ask_user_continue"):
             await orch._retry_build_eval(sprint, contract_path, "Build")
@@ -786,8 +792,404 @@ async def test_verifier_pass_proceeds_to_evaluate():
 
         with patch.object(orch, "build", side_effect=mock_build), \
              patch.object(orch, "evaluate", side_effect=mock_evaluate), \
-             patch.object(orch, "verify", side_effect=mock_verify):
+             patch.object(orch, "verify", side_effect=mock_verify), \
+             patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))):
             passed = await orch._retry_build_eval(sprint, contract_path, "Build")
 
         assert eval_called
         assert passed
+
+
+# --- Parse eval score ---
+
+def test_parse_eval_score_mixed():
+    from orchestrator import _parse_eval_score
+    text = """
+- [x] Feature A works | screenshots/a.png
+- [x] Feature B works | screenshots/b.png
+- [ ] Feature C broken ← FAIL | screenshots/c.png
+- [x] Feature D works | screenshots/d.png
+"""
+    passed, total = _parse_eval_score(text)
+    assert passed == 3
+    assert total == 4
+
+
+def test_parse_eval_score_empty():
+    from orchestrator import _parse_eval_score
+    assert _parse_eval_score("No criteria here") == (0, 0)
+
+
+def test_parse_eval_score_all_pass():
+    from orchestrator import _parse_eval_score
+    text = "- [x] A\n- [x] B\n- [x] C\n"
+    passed, total = _parse_eval_score(text)
+    assert passed == 3
+    assert total == 3
+
+
+# --- Evaluation preservation (overwrite bug fix) ---
+
+@pytest.mark.anyio
+async def test_evaluate_preserves_disk_eval_when_more_detailed():
+    """When evaluator writes detailed eval to disk via Write tool and returns
+    a summary, the disk version should be preserved."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Users can log in")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n- [ ] Login works\n- [ ] Data persists")
+
+        # Simulate evaluator writing detailed eval to disk (via Write tool)
+        eval_path = os.path.join(sprint_dir, "evaluation.md")
+        detailed_eval = (
+            "- [x] Login works | screenshots/login.png\n"
+            "- [ ] Data persists ← FAIL | screenshots/persist.png\n"
+            "### Verdict: FAIL\n"
+        )
+        with open(eval_path, "w") as f:
+            f.write(detailed_eval)
+
+        # Agent returns only a summary (the bug case)
+        summary_response = "Evaluation complete.\n### Verdict: FAIL\n55/71 criteria passed."
+
+        mock = AsyncMock(return_value=_mock_result(summary_response))
+        with patch("orchestrator.call_agent", mock):
+            with patch.object(orch, "server"):
+                passed = await orch.evaluate(sprint, contract_path)
+
+        assert passed is False
+        # The detailed version should be preserved on disk
+        with open(eval_path) as f:
+            content = f.read()
+        assert "- [x] Login works" in content
+        assert "- [ ] Data persists" in content
+
+        # Attempt file should also have the detailed version
+        attempt_path = os.path.join(sprint_dir, "evaluation_attempt_1.md")
+        with open(attempt_path) as f:
+            attempt_content = f.read()
+        assert "- [x] Login works" in attempt_content
+
+
+@pytest.mark.anyio
+async def test_evaluate_uses_response_when_no_disk_eval():
+    """When no prior eval exists on disk, agent response is used normally."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Users can log in")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n- [ ] Login works")
+
+        response = "- [x] Login works | screenshots/login.png\n### Verdict: PASS\n"
+        mock = AsyncMock(return_value=_mock_result(response))
+        with patch("orchestrator.call_agent", mock):
+            with patch.object(orch, "server"):
+                passed = await orch.evaluate(sprint, contract_path)
+
+        assert passed is True
+        eval_path = os.path.join(sprint_dir, "evaluation.md")
+        with open(eval_path) as f:
+            content = f.read()
+        assert "- [x] Login works" in content
+
+
+# --- Smoke test ---
+
+@pytest.mark.anyio
+async def test_smoke_test_fail_skips_eval():
+    """When smoke test fails, evaluate should not be called."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Full Build")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n- [ ] App loads")
+
+        build_called = False
+        eval_called = False
+
+        async def mock_build(s, cp):
+            nonlocal build_called
+            build_called = True
+
+        async def mock_evaluate(s, cp):
+            nonlocal eval_called
+            eval_called = True
+            return True
+
+        with patch.object(orch, "build", side_effect=mock_build), \
+             patch.object(orch, "evaluate", side_effect=mock_evaluate), \
+             patch.object(orch, "verify", AsyncMock(return_value=None)), \
+             patch.object(orch, "_smoke_test", AsyncMock(return_value=(False, "Server crashed"))), \
+             patch.dict("config.CONFIG", {"max_build_attempts": 1}), \
+             patch("orchestrator._ask_user_continue"):
+            await orch._retry_build_eval(sprint, contract_path, "Build")
+
+        assert build_called
+        assert not eval_called  # smoke fail should skip eval
+
+        # Smoke failure should be written as evaluation feedback
+        eval_path = os.path.join(sprint_dir, "evaluation.md")
+        with open(eval_path) as f:
+            content = f.read()
+        assert "Smoke Test: FAIL" in content
+        assert "Server crashed" in content
+
+
+# --- Regression detection ---
+
+@pytest.mark.anyio
+async def test_regression_resets_generator_session():
+    """Score dropping >20pp from best should reset Generator session."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Users can log in")
+
+        # Simulate score history: 87% → 28% (>20pp drop)
+        orch._generator_session_id = "existing-session-123"
+        orch.state.add_eval_score(1, 1, 87, 100)
+        orch.state.add_eval_score(1, 2, 28, 100)
+
+        orch._check_regression(sprint, "Sprint 1")
+
+        # Session should have been reset
+        assert orch._generator_session_id is None
+
+
+@pytest.mark.anyio
+async def test_no_regression_keeps_session():
+    """Small score improvements should not reset the session."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Users can log in")
+
+        orch._generator_session_id = "existing-session-123"
+        orch.state.add_eval_score(1, 1, 70, 100)
+        orch.state.add_eval_score(1, 2, 75, 100)
+
+        orch._check_regression(sprint, "Sprint 1")
+
+        # Session should still be intact
+        assert orch._generator_session_id == "existing-session-123"
+
+
+@pytest.mark.anyio
+async def test_downward_trend_resets_session():
+    """Three consecutive drops should reset the session."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Users can log in")
+
+        orch._generator_session_id = "existing-session-123"
+        orch.state.add_eval_score(1, 1, 80, 100)
+        orch.state.add_eval_score(1, 2, 75, 100)
+        orch.state.add_eval_score(1, 3, 70, 100)
+
+        orch._check_regression(sprint, "Sprint 1")
+
+        assert orch._generator_session_id is None
+
+
+# --- Eval score tracking in state ---
+
+def test_state_eval_score_tracking():
+    """State should track eval scores and return history."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from state import HarnessState
+        state = HarnessState(tmpdir)
+        state.init()
+
+        state.add_eval_score(1, 1, 73, 84)
+        state.add_eval_score(1, 2, 41, 146)
+        state.add_eval_score(2, 1, 50, 100)
+
+        # All scores
+        all_scores = state.get_eval_scores()
+        assert len(all_scores) == 3
+
+        # Sprint 1 only
+        s1 = state.get_eval_scores(1)
+        assert len(s1) == 2
+        assert s1[0]["pct"] == 86  # 73/84
+        assert s1[1]["pct"] == 28  # 41/146
+
+        # Last score
+        last = state.get_last_eval_score(1)
+        assert last["passed"] == 41
+        assert last["total"] == 146
+
+        # No scores for sprint 3
+        assert state.get_last_eval_score(3) is None
+
+
+# --- Self-eval honesty (integration-level) ---
+
+@pytest.mark.anyio
+async def test_self_eval_discrepancy_logged():
+    """When self-eval claims 100% but last eval was <80%, discrepancy is logged."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Full Build")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n- [ ] Feature A\n- [ ] Feature B")
+
+        # Record a previous eval score of 50%
+        orch.state.add_eval_score(1, 1, 50, 100)
+
+        # Generator claims 100% in self_eval
+        self_eval_content = (
+            "# Self-Evaluation\n"
+            "- [x] Feature A\n- [x] Feature B\n"
+            "Self-eval pass rate: 2/2 (100%)\n"
+        )
+
+        # Mock call_agent to write self_eval.md
+        async def mock_call_agent(**kwargs):
+            # Write self_eval.md like the generator would
+            with open(os.path.join(sprint_dir, "self_eval.md"), "w") as f:
+                f.write(self_eval_content)
+            return _mock_result("Build complete")
+
+        with patch("orchestrator.call_agent", side_effect=mock_call_agent):
+            await orch.build(sprint, contract_path)
+
+        # The build should complete. The discrepancy is logged, not raised.
+        # We verify by checking the log file for the warning.
+        log_path = os.path.join(orch.output_dir, "harness.log")
+        with open(log_path) as f:
+            log_content = f.read()
+        assert "SELF-EVAL DISCREPANCY" in log_content
+
+
+# --- Previous evaluation passed to Evaluator ---
+
+@pytest.mark.anyio
+async def test_evaluator_receives_previous_eval_for_regression_comparison():
+    """On attempt 2+, Evaluator should receive the previous evaluation for comparison."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Full Build")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n- [ ] Login works\n- [ ] Data persists")
+
+        # Simulate attempt 1 already happened (write previous eval attempt)
+        prev_eval = (
+            "- [x] Login works | screenshots/login.png\n"
+            "- [ ] Data persists ← FAIL | screenshots/persist.png\n"
+            "### Verdict: FAIL\n"
+        )
+        with open(os.path.join(sprint_dir, "evaluation_attempt_1.md"), "w") as f:
+            f.write(prev_eval)
+        # Set attempt counter so next eval is attempt 2
+        orch.state.increment(1, "eval")  # attempt becomes 1
+
+        captured_prompt = None
+
+        async def mock_call_agent(**kwargs):
+            nonlocal captured_prompt
+            captured_prompt = kwargs.get("user_prompt", "")
+            return _mock_result("- [x] Login works\n- [x] Data persists\n### Verdict: PASS")
+
+        with patch("orchestrator.call_agent", side_effect=mock_call_agent):
+            with patch.object(orch, "server"):
+                await orch.evaluate(sprint, contract_path)
+
+        # Evaluator prompt should contain previous evaluation
+        assert "Previous Evaluation" in captured_prompt
+        assert "REGRESSION" in captured_prompt
+        assert "Login works" in captured_prompt
+
+
+@pytest.mark.anyio
+async def test_evaluator_no_previous_eval_on_first_attempt():
+    """First evaluation attempt should NOT include previous eval section."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Full Build")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("# Contract\n- [ ] Login works")
+
+        captured_prompt = None
+
+        async def mock_call_agent(**kwargs):
+            nonlocal captured_prompt
+            captured_prompt = kwargs.get("user_prompt", "")
+            return _mock_result("### Verdict: PASS")
+
+        with patch("orchestrator.call_agent", side_effect=mock_call_agent):
+            with patch.object(orch, "server"):
+                await orch.evaluate(sprint, contract_path)
+
+        assert "Previous Evaluation" not in captured_prompt

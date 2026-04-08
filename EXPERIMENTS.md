@@ -341,6 +341,50 @@ PASS 평가 품질:
 
 ---
 
+### Experiment D: wax-music-playlist-curator 실패 분석 + 피드백 루프 강화 (2026-04-08)
+
+대상: `wax-music-playlist-curator` (Level 5, 149 criteria)
+결과: **10회 FAIL, $146, 7시간.** Build 10에서 AgentError 크래시.
+
+#### 근본 원인 6개
+
+| # | 원인 | 영향 |
+|---|------|------|
+| 1 | **evaluation.md 덮어쓰기 버그** | Evaluator가 Write 도구로 상세 평가를 디스크에 작성 → 오케스트레이터가 에이전트 텍스트 응답(요약)으로 덮어씀. 4/9 평가에서 상세 피드백 손실 |
+| 2 | **Generator 컨텍스트 포화** | 연속 세션 9회 → build_9는 14분 1턴 $7.02. 실질적 작업 불가 |
+| 3 | **Generator 자기평가 거짓말** | 매번 149/149 (100%) 주장. Evaluator는 10~105개 실패 발견 |
+| 4 | **회귀 감지 없음** | build_4가 앱 완전 크래시 (빈 화면). 스모크 테스트 있었으면 즉시 감지 |
+| 5 | **테스트 불가 기준** | 애니메이션 타이밍, 블러 전환은 Playwright로 검증 불가 |
+| 6 | **Evaluator 불일치** | 매번 다른 수의 기준 테스트 (84, 146, 148, 94개) |
+
+#### 수정 사항 (5건)
+
+1. **evaluation.md 보존 로직** — 에이전트 응답보다 디스크 버전이 더 상세하면(criteria 수 비교) 디스크 버전 유지
+2. **스모크 테스트** — 빌드 후 HTTP 헬스체크. 실패 시 Evaluator 스킵, 크래시 피드백 직접 전달
+3. **회귀 감지 + 세션 리셋** — eval 점수 추적. 최고점 대비 >20pp 하락 또는 3연속 하락 시 Generator 세션 리셋
+4. **자기평가 정직성 검증** — 자기평가 vs 마지막 Evaluator 점수 교차 비교. 불일치 시 로그 경고 + Generator 프롬프트에 점수 히스토리 주입
+5. **eval 점수 히스토리** — state.json에 점수 이력 저장. Generator 프롬프트에 포함시켜 자기기만 방지
+
+#### 테스트 추가 (12건)
+
+- `test_parse_eval_score_*` (3): 점수 파싱
+- `test_evaluate_preserves_disk_eval_*` (2): 디스크 평가 보존
+- `test_smoke_test_fail_skips_eval` (1): 스모크 테스트
+- `test_regression_resets_generator_session` (1): 회귀 감지
+- `test_no_regression_keeps_session` (1): 정상 시 세션 유지
+- `test_downward_trend_resets_session` (1): 3연속 하락
+- `test_state_eval_score_tracking` (1): 상태 추적
+- `test_self_eval_discrepancy_logged` (1): 정직성 검증
+- `test_build_prompt_includes_score_history` (1): 프롬프트 주입
+
+**기대 효과**: wax-music 시나리오에서:
+- 원인 1 (덮어쓰기): eval_2 후 build_3 퇴보 방지 → 초기 수렴 가속
+- 원인 2 (컨텍스트 포화): build_7 이후 세션 리셋 → 실질적 작업 재개
+- 원인 4 (크래시): eval_4 빈 화면 → 스모크 테스트로 즉시 감지, Evaluator $3.23 절약
+- 보수적 추정: 10회 → 5~6회 FAIL 후 PASS, $146 → ~$80
+
+---
+
 ## 실행 우선순위
 
 | 순위 | 실험 | 이유 | 예상 비용 |

@@ -59,6 +59,17 @@ def _count_criteria(text: str) -> int:
     return len(_CRITERIA_RE.findall(text))
 
 
+def _parse_eval_score(text: str) -> tuple[int, int]:
+    """Parse pass/fail counts from evaluation text.
+
+    Returns (passed_count, total_count). Returns (0, 0) if unparseable.
+    """
+    passed = len(re.findall(r"^\s*- \[x\] ", text, re.MULTILINE))
+    failed = len(re.findall(r"^\s*- \[ \] ", text, re.MULTILINE))
+    total = passed + failed
+    return passed, total
+
+
 def _parse_automation_limited(text: str) -> tuple[int, int]:
     """Count automation-limited vs total criteria in evaluation text.
 
@@ -488,7 +499,7 @@ class Orchestrator:
             agent_result.result,
         )
 
-        # Log Generator self-eval (informational — Evaluator is the real gate)
+        # Log Generator self-eval and cross-reference with last Evaluator score
         self_eval_path = os.path.join(self._sprint_dir(sprint), "self_eval.md")
         self_eval_text = _read_file_optional(self_eval_path)
         if self_eval_text:
@@ -500,6 +511,14 @@ class Orchestrator:
                 _log("Generator", f"Self-eval: {passed_count}/{total_count} ({pct}%) criteria satisfied.")
                 if pct < 90:
                     _log("Harness", f"Self-eval below 90% ({pct}%). Generator should have continued building.")
+
+                # Honesty check: compare self-eval with last Evaluator score
+                last_eval = self.state.get_last_eval_score(sprint.number)
+                if last_eval and pct > 95 and last_eval["pct"] < 80:
+                    _log("Harness",
+                         f"⚠ SELF-EVAL DISCREPANCY: Generator claims {pct}% but "
+                         f"last Evaluator scored {last_eval['pct']}%. "
+                         f"Generator may not be honestly self-testing.")
 
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
         # Use cached contract (GAN principle — same as build())
@@ -513,6 +532,29 @@ class Orchestrator:
 
         self.state.increment(sprint.number, "eval")
         attempt = self.state.get_sprint_attempt(sprint.number, "eval")
+
+        # Read previous evaluation for regression comparison (article principle:
+        # file-based communication, Evaluator compares directly)
+        prev_eval_section = ""
+        if attempt > 1:
+            prev_attempt_path = os.path.join(
+                sprint_dir, f"evaluation_attempt_{attempt - 1}.md"
+            )
+            prev_eval = _read_file_optional(prev_attempt_path)
+            if prev_eval and _count_criteria(prev_eval) > 0:
+                prev_eval_section = (
+                    f"\n\n## Previous Evaluation (attempt {attempt - 1})\n\n"
+                    f"Compare your findings against this previous evaluation. "
+                    f"For each criterion:\n"
+                    f"- If it was PASS before and is now FAIL, label it **REGRESSION** — "
+                    f"this is critical, the Generator broke something that worked.\n"
+                    f"- If it was FAIL before and is now PASS, label it **FIXED**.\n"
+                    f"- If it was FAIL before and is still FAIL, label it **PERSISTENT**.\n\n"
+                    f"In your Required Changes section, prioritize regressions first, "
+                    f"then persistent failures. For each change, note its blast radius: "
+                    f"\"fixing this unblocks N other criteria\" when applicable.\n\n"
+                    f"Previous evaluation:\n{prev_eval}"
+                )
 
         label = self._sprint_label(sprint)
         _log("Evaluator", f"{label} — Starting servers...")
@@ -535,6 +577,7 @@ class Orchestrator:
                     f"Navigate to {CONFIG['dev_server_url']}. "
                     f"Take screenshots — save them to {screenshots_dir}/. "
                     f"Write your evaluation as a response."
+                    f"{prev_eval_section}"
                 )
             else:
                 prompt = (
@@ -544,6 +587,7 @@ class Orchestrator:
                     f"Navigate to {CONFIG['dev_server_url']}. Test every criterion in the sprint contract. "
                     f"Take screenshots as evidence — save them to {screenshots_dir}/. "
                     f"Write your evaluation as a response."
+                    f"{prev_eval_section}"
                 )
 
             eval_result = await call_agent(
@@ -557,13 +601,31 @@ class Orchestrator:
             )
             self._track_cost(eval_result, "eval")
 
-            with open(eval_path, "w") as f:
-                f.write(eval_result.result)
+            # Preserve the most detailed evaluation content.
+            # The Evaluator may write a detailed per-criterion evaluation to
+            # evaluation.md via its Write tool, then return only a summary as
+            # its text response. Use whichever version has more criteria.
+            agent_response = eval_result.result
+            disk_eval = _read_file_optional(eval_path)
+            _, response_criteria = _parse_eval_score(agent_response)
+            _, disk_criteria = _parse_eval_score(disk_eval)
+
+            if disk_criteria > response_criteria:
+                # Evaluator wrote a more detailed version to disk — keep it
+                best_eval = disk_eval
+                _log("Evaluator", f"{label} — Preserved disk evaluation ({disk_criteria} criteria) "
+                     f"over agent response ({response_criteria} criteria)")
+            else:
+                # Agent response is the detailed version (or equally detailed)
+                best_eval = agent_response
+                with open(eval_path, "w") as f:
+                    f.write(agent_response)
+
             # Save attempt-specific copy for quality tracking history
             _save_agent_response(
                 sprint_dir,
                 f"evaluation_attempt_{attempt}.md",
-                eval_result.result,
+                best_eval,
             )
         finally:
             _log("Evaluator", f"{label} — Stopping servers...")
@@ -572,11 +634,11 @@ class Orchestrator:
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "eval", elapsed)
 
-        passed = _check_verdict_pass(eval_result.result)
+        passed = _check_verdict_pass(best_eval)
 
         # Reject PASS if too many criteria were skipped as automation-limited
         if passed:
-            limited, total = _parse_automation_limited(eval_result.result)
+            limited, total = _parse_automation_limited(best_eval)
             if total > 0 and limited / total > 0.10:
                 _log("Evaluator",
                      f"{label} — Verdict was PASS but {limited}/{total} criteria "
@@ -589,9 +651,17 @@ class Orchestrator:
             _log("Evaluator", f"{label} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
         else:
             _log("Evaluator", f"{label} — {_C.RED}{_C.BOLD}FAIL{_C.RESET} ({stats})")
-        _print_eval_summary(eval_result.result)
+        _print_eval_summary(best_eval)
         if not passed:
-            _print_required_changes(eval_result.result)
+            _print_required_changes(best_eval)
+
+        # Track eval score for regression detection
+        eval_passed, eval_total = _parse_eval_score(best_eval)
+        if eval_total > 0:
+            pct = int(eval_passed / eval_total * 100)
+            self.state.add_eval_score(sprint.number, attempt, eval_passed, eval_total)
+            _log("Evaluator", f"{label} — Score: {eval_passed}/{eval_total} ({pct}%)")
+
         return passed
 
     async def verify(self, sprint: Sprint, contract_path: str) -> VerificationResult | None:
@@ -651,20 +721,111 @@ class Orchestrator:
 
         return vresult
 
+    async def _smoke_test(self) -> tuple[bool, str]:
+        """Quick health check: can the app load and render any UI elements?
+
+        Returns (ok, message). Starts and stops the server internally.
+        Catches crashes that would waste 30+ minutes of Evaluator time.
+        """
+        import urllib.request
+        import urllib.error
+
+        try:
+            self.server.start()
+        except RuntimeError as exc:
+            return False, f"Server failed to start: {exc}"
+
+        try:
+            url = CONFIG["dev_server_url"]
+            try:
+                resp = urllib.request.urlopen(url, timeout=10)
+                body = resp.read().decode("utf-8", errors="replace")
+            except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+                return False, f"HTTP request failed: {exc}"
+
+            # Check for blank page: the HTML should have a non-empty <div id="root"> or similar
+            if len(body) < 100:
+                return False, f"Response body too small ({len(body)} bytes) — likely blank page"
+
+            # Check for common React/Vue crash indicators
+            if "<div id=\"root\"></div>" in body and "<script" in body:
+                # Empty root div with scripts = React app that hasn't rendered yet
+                # This is normal for SPA — the JS needs to execute.
+                # We can't detect React runtime errors from HTML alone.
+                # Still better than nothing: at least the server responded.
+                pass
+
+            return True, "OK"
+        finally:
+            self.server.stop()
+
+    def _check_regression(self, sprint: Sprint, label: str):
+        """Detect eval score regression and reset Generator session if needed.
+
+        Triggers session reset when:
+        - Score drops >20 percentage points from the best score seen
+        - Two consecutive score drops (downward trend)
+        """
+        scores = self.state.get_eval_scores(sprint.number)
+        if len(scores) < 2:
+            return
+
+        current = scores[-1]
+        previous = scores[-2]
+        best_pct = max(s["pct"] for s in scores)
+
+        # Catastrophic regression: >20pp drop from best
+        drop_from_best = best_pct - current["pct"]
+        if drop_from_best > 20:
+            _log("Harness", f"{label} — REGRESSION DETECTED: score dropped from best "
+                 f"{best_pct}% to {current['pct']}% (Δ{drop_from_best}pp). "
+                 f"Resetting Generator session to clear stale context.")
+            self._generator_session_id = None
+            return
+
+        # Two consecutive drops
+        if len(scores) >= 3:
+            prev_prev = scores[-3]
+            if current["pct"] < previous["pct"] < prev_prev["pct"]:
+                _log("Harness", f"{label} — DOWNWARD TREND: "
+                     f"{prev_prev['pct']}% → {previous['pct']}% → {current['pct']}%. "
+                     f"Resetting Generator session.")
+                self._generator_session_id = None
+
     async def _retry_build_eval(self, sprint: Sprint, contract_path: str, label: str):
         """Shared retry loop for both full and simple modes."""
         sprint_passed = False
         for attempt in range(CONFIG["max_build_attempts"]):
             try:
+                # Smoke test: if app is buildable but crashing, detect early
                 await self.build(sprint, contract_path)
 
-                # Verifier: deterministic checks before expensive LLM eval
-                vresult = await self.verify(sprint, contract_path)
-                if vresult is not None and not vresult.overall_pass:
-                    _log("Harness", f"{label} — Verifier FAIL, skipping Evaluator (saving time + cost)")
+                # Post-build smoke test before expensive evaluation
+                smoke_ok, smoke_msg = await self._smoke_test()
+                if not smoke_ok:
+                    _log("Harness", f"{label} — SMOKE TEST FAIL: {smoke_msg}")
+                    _log("Harness", f"{label} — Skipping Evaluator (app not functional)")
+                    # Write smoke test failure as evaluation feedback for Generator
+                    sprint_dir = self._sprint_dir(sprint)
+                    eval_path = os.path.join(sprint_dir, "evaluation.md")
+                    with open(eval_path, "w") as f:
+                        f.write(
+                            f"## Smoke Test: FAIL\n\n"
+                            f"The application failed a basic health check before full evaluation.\n\n"
+                            f"**Error:** {smoke_msg}\n\n"
+                            f"### Verdict: FAIL\n\n"
+                            f"Fix the app crash before addressing individual criteria. "
+                            f"The Evaluator cannot test a broken app.\n"
+                        )
                     passed = False
                 else:
-                    passed = await self.evaluate(sprint, contract_path)
+                    # Verifier: deterministic checks before expensive LLM eval
+                    vresult = await self.verify(sprint, contract_path)
+                    if vresult is not None and not vresult.overall_pass:
+                        _log("Harness", f"{label} — Verifier FAIL, skipping Evaluator (saving time + cost)")
+                        passed = False
+                    else:
+                        passed = await self.evaluate(sprint, contract_path)
             except InfraError as exc:
                 _log("Harness", f"{label} attempt {attempt + 1} INFRA ERROR: {exc}")
                 _log("Harness", f"Infrastructure error — rebuilding won't help. Stopping retries for {label}.")
@@ -678,6 +839,7 @@ class Orchestrator:
             except AgentError as exc:
                 _log("Harness", f"{label} attempt {attempt + 1} error: {exc}")
                 passed = False
+                # Agent crash = reset session (existing behavior preserved)
             except RuntimeError as exc:
                 _log("Harness", f"{label} attempt {attempt + 1} server error: {exc}")
                 passed = False
@@ -685,6 +847,9 @@ class Orchestrator:
             if passed:
                 sprint_passed = True
                 break
+
+            # Regression detection: reset Generator session if score is declining
+            self._check_regression(sprint, label)
 
             if attempt == CONFIG["max_build_attempts"] - 1:
                 # Delegate to user: continue or abort? (raises UserAbort)
