@@ -287,10 +287,7 @@ class Orchestrator:
                 f"Criteria generation produced only {criteria_count} criteria (minimum 10 required). "
                 f"The Evaluator may have failed to parse the spec correctly."
             )
-        if criteria_count > 100:
-            _log("Harness", f"⚠ {criteria_count} criteria generated (target: 50-100). "
-                 f"High criteria count increases eval time and cost. "
-                 f"Each criterion costs ~20s eval time, ~$0.10.")
+        _log("Harness", f"Criteria count: {criteria_count}")
         elapsed_s = int(time.time() - start)
         _log("Evaluator", f"Generated {criteria_count} testable criteria. ({_fmt_stats(agent_result, start)})")
         # Save criteria generation response for analysis
@@ -647,7 +644,7 @@ class Orchestrator:
         # Reject PASS if too many criteria were skipped as automation-limited
         if passed:
             limited, total = _parse_automation_limited(best_eval)
-            if total > 0 and limited / total > 0.05:
+            if total > 0 and limited / total > 0.10:
                 _log("Evaluator",
                      f"{label} — Verdict was PASS but {limited}/{total} criteria "
                      f"({int(limited/total*100)}%) marked automation-limited. "

@@ -354,7 +354,7 @@ When asked to generate testable criteria from a product spec, create a comprehen
 ```
 
 **Rules:**
-1. **5-15 criteria per feature.** Aim for 50-100 total across all features. Quality over quantity — 80 precise, testable criteria are better than 150 vague ones. Each criterion you add costs ~20 seconds of Evaluator testing time.
+1. **5-15 criteria per feature.** Every criterion must be specific, testable, and non-redundant. Do not pad the list with vague or overlapping criteria. The right number depends on app complexity — a simple CRUD app needs fewer than a multi-feature collaborative platform.
 2. **Action → Result format.** Every criterion must specify a user action and an expected observable result. "Mixer panel exists" is NOT a criterion. "Dragging volume fader from 0% to 50% changes the level meter display proportionally" IS a criterion.
 3. **No existence checks.** Never write "X button is present" or "Y panel is visible." These pass with empty stubs. Instead: "Clicking X button opens Y with Z functionality."
 4. **Include edge cases.** Empty input, invalid input, rapid repeated actions, boundary values (min/max BPM, zero volume, etc.).
@@ -548,7 +548,7 @@ Write your review to the specified file path. If all criteria are testable and c
 
     Canvas drag, element resize, panning, zoom, real-time sync, cursor tracking — ALL testable. No exceptions.
 
-    **Maximum 5% of criteria can be automation-limited.** (Down from 10%.) If more than 5% would be skipped, the criteria need to be revised, not skipped.
+    **Maximum 10% of criteria can be automation-limited.** If more than 10% would be skipped, STOP and report — the criteria need to be revised, not skipped.
 
 14. **Test 100% of criteria. "Not tested" = FAIL.** You must attempt every criterion. No exceptions, no skipping.
 

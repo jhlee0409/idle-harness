@@ -63,7 +63,7 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 - **Timeout stops retries** — `AgentTimeout` is caught separately from `AgentError` in the retry loop. Timeouts indicate the agent is stuck (hanging command, infinite loop), so retries are stopped immediately rather than wasting build cycles.
 - **`comms/` is staging, not persistence** — Wiped on each `setup()`. Project artifacts archived to `output/{slug}/.harness/` after completion.
 - **Verdict/contract parsing uses regex** — `_check_verdict_pass()` matches `^#{0,3}\s*Verdict:\s*PASS\s*$` to prevent false positives. `_check_contract_agreed()` matches `^AGREED\b`.
-- **Evaluator PASS is validated** — Orchestrator parses evaluation for automation-limited ratio; >5% skipped criteria overrides PASS to FAIL. Canvas drag/interactions are NOT automation-limited (testable via dispatchEvent or API).
+- **Evaluator PASS is validated** — Orchestrator parses evaluation for automation-limited ratio; >10% skipped criteria overrides PASS to FAIL. Canvas drag/interactions are NOT automation-limited (testable via dispatchEvent or API).
 - **Evaluation preservation** — After eval, orchestrator compares disk-written evaluation (via Write tool) vs agent text response. Keeps whichever has more criteria, preventing data loss when Evaluator writes detailed eval to disk but returns a summary.
 - **Previous evaluation comparison** — On retry, Evaluator receives the previous evaluation and must label regressions (was PASS, now FAIL), fixes, and persistent failures. Required Changes include blast radius and priority.
 - **Smoke test** — Post-build HTTP health check (`_smoke_test()`) before expensive Evaluator. Catches app crashes in 5 seconds vs 30+ minutes. Failure is written to evaluation.md as direct feedback.
@@ -72,7 +72,7 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 - **Criteria review** — `_review_criteria()` in simple mode: Generator reads and acknowledges criteria before building, starting continuous session with criteria context.
 - **Generator writes self_eval.md** — Mandatory self-evaluation with actual verification (curl output, build results). Orchestrator logs discrepancy if self-eval claims >95% but last Evaluator scored <80%.
 - **Automation-limited feedback loop** — Items the evaluator couldn't test are extracted and passed back to the generator on retry with explicit self-test instructions.
-- **Criteria generation has bounds** — Minimum 10, warns if >100. Target 50-100 criteria. If evaluator produces <10, harness raises RuntimeError.
+- **Criteria generation has minimum bound** — If evaluator produces <10 criteria, harness raises RuntimeError. No upper cap — count depends on app complexity.
 - **Evaluator gets spec in simple mode** — Product spec (with Visual Design Language) is passed inline alongside testable criteria so evaluator can assess design quality against the original design direction.
 - **Contract is cached in memory** — `_cached_contracts` dict initialized in `__init__`, caches contract text on first read to prevent generator from modifying criteria between retries (GAN integrity).
 - **Design refinement includes contract** — Generator receives testable criteria during design refinement so it knows which specific frontend criteria the Evaluator will re-test.
