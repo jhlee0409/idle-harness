@@ -68,7 +68,7 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 - **Previous evaluation comparison** — On retry, Evaluator receives the previous evaluation and must label regressions (was PASS, now FAIL), fixes, and persistent failures. Required Changes include blast radius and priority.
 - **Smoke test** — Post-build HTTP health check (`_smoke_test()`) before expensive Evaluator. Catches app crashes in 5 seconds vs 30+ minutes. Failure is written to evaluation.md as direct feedback.
 - **Regression detection** — `_check_regression()` tracks eval scores in state.json. Resets Generator session on >20pp score drop from best, or three consecutive drops. Prevents context saturation.
-- **Adaptive eval frequency** — After first eval, if score >90% limits remaining attempts to 3. If <30% logs warning.
+- **No attempt limiting** — Every build-eval cycle runs to completion. Optimizes for first-time PASS, not per-run cost savings. Re-running is always more expensive than extra attempts.
 - **Criteria review** — `_review_criteria()` in simple mode: Generator reads and acknowledges criteria before building, starting continuous session with criteria context.
 - **Generator writes self_eval.md** — Mandatory self-evaluation with actual verification (curl output, build results). Orchestrator logs discrepancy if self-eval claims >95% but last Evaluator scored <80%.
 - **Automation-limited feedback loop** — Items the evaluator couldn't test are extracted and passed back to the generator on retry with explicit self-test instructions.

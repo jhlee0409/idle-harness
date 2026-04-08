@@ -798,14 +798,9 @@ class Orchestrator:
                 self._generator_session_id = None
 
     async def _retry_build_eval(self, sprint: Sprint, contract_path: str, label: str):
-        """Shared retry loop for both full and simple modes.
-
-        Adaptive: after first eval, adjusts effective max attempts based on score.
-        Article principle: "evaluator worth cost when task at edge of model capability."
-        """
+        """Shared retry loop for both full and simple modes."""
         sprint_passed = False
-        max_attempts = CONFIG["max_build_attempts"]
-        for attempt in range(max_attempts):
+        for attempt in range(CONFIG["max_build_attempts"]):
             try:
                 # Smoke test: if app is buildable but crashing, detect early
                 await self.build(sprint, contract_path)
@@ -861,19 +856,7 @@ class Orchestrator:
             # Regression detection: reset Generator session if score is declining
             self._check_regression(sprint, label)
 
-            # Adaptive attempt limit based on first eval score
-            scores = self.state.get_eval_scores(sprint.number)
-            if len(scores) == 1:
-                first_score = scores[0]["pct"]
-                if first_score >= 90:
-                    max_attempts = min(max_attempts, attempt + 3)
-                    _log("Harness", f"{label} — First eval {first_score}% (near-pass). "
-                         f"Limiting to {max_attempts - attempt - 1} more attempt(s).")
-                elif first_score < 30:
-                    _log("Harness", f"{label} — First eval {first_score}% (very low). "
-                         f"App may be too complex for single-pass build.")
-
-            if attempt == max_attempts - 1:
+            if attempt == CONFIG["max_build_attempts"] - 1:
                 # Delegate to user: continue or abort? (raises UserAbort)
                 _ask_user_continue(label)
 
