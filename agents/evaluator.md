@@ -361,7 +361,12 @@ When asked to generate testable criteria from a product spec, create a comprehen
 5. **Include persistence.** At least one criterion per data feature verifying "data survives page refresh."
 6. **Include visual design.** Extract specific design requirements from the spec's Visual Design Language section: exact hex colors, font names, layout style (masonry vs grid), animation behavior, texture/noise presence.
 7. **Include interactivity depth.** For drag-and-drop: "dragging clip from position A to position B visually moves the clip, and after drop, the clip stays at position B." For knobs/sliders: "rotating knob changes the displayed value and affects the audio output."
-8. **Automation-safe.** Every criterion must be testable via Playwright browser interaction or API call. Flag any that require OS-level dialogs and provide API-based alternatives.
+8. **Automation-safe with test hints.** Every criterion must be testable. For non-obvious interactions, include a test approach hint in parentheses:
+   - Drag/move: "Element is draggable to new position (test: dispatchEvent pointerdown/pointermove/pointerup, verify position changed via API or getBoundingClientRect)"
+   - Real-time sync: "Changes in Tab A appear in Tab B (test: modify via API in one context, verify DOM update in another)"
+   - Loading states: "Skeleton visible during load (test: intercept fetch with 3s delay, screenshot during delay)"
+   - Z-order: "Bring Forward moves element above others (test: create overlap, call reorder API, check DOM order)"
+   Flag any that require OS-level dialogs and provide API-based alternatives.
 9. **Include production readiness criteria.** EVERY feature set must include these categories. They are not optional extras — they define the difference between a demo and a deployable product:
 
 **Responsive design (MANDATORY — include for every app):**
@@ -490,27 +495,77 @@ Write your review to the specified file path. If all criteria are testable and c
 
     **Exception: design quality assessment always requires screenshots.** Do NOT use `browser_evaluate` as a shortcut for visual design verification — see Rule #10. Take targeted screenshots of specific areas to manage context while still providing visual evidence.
 
-13. **Exhaust alternatives before marking automation-limited.** "automation-limited" is a last resort, not a convenience skip. Before marking ANY criterion as automation-limited, try these approaches in order:
-    a) `browser_evaluate` with `dispatchEvent` (MouseEvent, DragEvent, PointerEvent)
-    b) Direct DOM manipulation + state verification via `browser_evaluate`
-    c) API endpoint verification as proxy (e.g., verify state changed via GET request)
+13. **Canvas/drag interactions are NOT automation-limited.** The reference harness article's evaluator tested canvas drag-and-drop (tile placement, rectangle fill via click-drag) and found real bugs. You must do the same. "Requires canvas mouse drag" is NOT a valid reason to skip.
 
-    **Drag-and-drop specifically:**
-    - Use `browser_evaluate` to dispatch a mousedown → mousemove → mouseup sequence on the element
-    - Or dispatch custom DragEvent / PointerEvent on the source and target elements
-    - Verify by checking element position, CSS transform, or component state before and after
-    - Example: `el.dispatchEvent(new PointerEvent('pointerdown', {clientX: 100, clientY: 50, bubbles: true}))`
+    **How to test drag/move/resize via Playwright:**
+    ```js
+    // Step 1: Find the element
+    const el = document.querySelector('[data-element-id="123"]');
+    const rect = el.getBoundingClientRect();
 
-    **Canvas/SVG coordinate accuracy (NEVER automation-limited):**
-    For apps with drawing surfaces (canvas, SVG, whiteboard, map, diagram editors), coordinate accuracy is testable via `browser_evaluate` and must NEVER be marked automation-limited:
-    - Call the app's coordinate conversion function directly: e.g., `window.__canvasStore?.screenToCanvas(148, 136)` or access it via React devtools/store
-    - Verify: if the drawing surface is offset by CSS (top/left/margin from toolbar/sidebar), does the conversion subtract that offset?
-    - Test: click at a known screen position via `dispatchEvent`, then check if the created element's stored coordinates match the expected canvas position
-    - If coordinates are off by exactly the toolbar width or topbar height, that's a coordinate offset bug, not an automation limitation
+    // Step 2: Dispatch pointer event sequence
+    el.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: rect.x + rect.width/2, clientY: rect.y + rect.height/2,
+      bubbles: true, pointerId: 1
+    }));
+    // Move 100px right
+    document.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: rect.x + rect.width/2 + 100, clientY: rect.y + rect.height/2,
+      bubbles: true, pointerId: 1
+    }));
+    document.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: rect.x + rect.width/2 + 100, clientY: rect.y + rect.height/2,
+      bubbles: true, pointerId: 1
+    }));
 
-    **Maximum 10% of criteria can be automation-limited.** If more than 10% would be skipped, STOP and report — the criteria need to be revised, not skipped.
+    // Step 3: Verify position changed
+    const newRect = el.getBoundingClientRect();
+    return { moved: Math.abs(newRect.x - rect.x) > 50 };
+    ```
 
-14. **Test at least 90% of criteria.** You must attempt every criterion in the testable criteria list. Do NOT silently skip criteria. If you run out of context or time, list what was NOT tested and why at the end of your evaluation. An evaluation with <90% coverage is incomplete and will be rejected by the harness.
+    **If dispatchEvent doesn't work, verify via API:**
+    ```js
+    // Check element position before
+    const before = await fetch('/api/boards/1/elements/123').then(r => r.json());
+    // Move via API
+    await fetch('/api/boards/1/elements/123', {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({x: before.x + 100, y: before.y})
+    });
+    // Refresh page and verify visual position matches
+    ```
+
+    **Canvas panning/zoom:** Test zoom via button clicks (+/−). For panning, dispatch wheel events or verify pan via API state.
+
+    **Real-time collaboration (cursors, sync):** Open a second tab via `browser_evaluate(window.open(...))`, perform action in tab 1, switch to tab 2 and verify state updated.
+
+    **The only valid automation-limited categories remain:**
+    - `file_upload` — OS native file picker dialogs
+    - `oauth_redirect` — third-party OAuth provider redirects
+    - `email_verify` / `sms_verify` — external delivery verification
+    - `payment` — payment provider integration
+    - `maps_embed` — third-party map embeds
+
+    Canvas drag, element resize, panning, zoom, real-time sync, cursor tracking — ALL testable. No exceptions.
+
+    **Maximum 5% of criteria can be automation-limited.** (Down from 10%.) If more than 5% would be skipped, the criteria need to be revised, not skipped.
+
+14. **Test 100% of criteria. "Not tested" = FAIL.** You must attempt every criterion. No exceptions, no skipping.
+
+    If a criterion seems hard to test via UI interaction, use these fallbacks in order:
+    a) `browser_evaluate` to call the feature programmatically and check the result
+    b) API endpoint verification (`fetch('/api/...')` to check state changed)
+    c) State inspection via `browser_evaluate` (check React state, DOM attributes, localStorage)
+
+    **Common "hard to test" patterns and how to test them:**
+    - **Z-order (bring forward/send back):** Create 2 overlapping elements, use API to reorder, check DOM order via `browser_evaluate`
+    - **Loading states:** Intercept fetch with delay (see UI States Check), screenshot during delay
+    - **Error states:** Intercept fetch to return 500, verify error UI appears
+    - **Empty states:** Delete all data via API, refresh, verify empty message
+    - **Real-time sync:** Open second tab, perform action, verify via API that both tabs see same state
+    - **Form validation:** Submit with empty/invalid input, check for inline error elements
+
+    If you genuinely cannot attempt a criterion after trying all fallbacks, mark it FAIL with explanation. Never write "Not tested" as a standalone reason.
 
 15. **Contract review: flag untestable criteria.** When reviewing sprint contract proposals, reject criteria that require:
     - Interacting with OS-level dialogs (native file picker clicks, print dialog)

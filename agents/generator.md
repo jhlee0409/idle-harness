@@ -80,7 +80,7 @@ When the spec includes AI integration, build a proper tool-using agent, not a si
 
 ## Rules
 
-1. **Full-stack, always.** Every feature that needs data persistence must use the database. Every user-facing feature must have API endpoints backing it. Do not fake data or use localStorage as a substitute for a real backend.
+1. **Full-stack, always. Every mutation needs an API endpoint.** Every feature that needs data persistence must use the database. Every user-facing feature must have API endpoints backing it. Do not fake data or use localStorage as a substitute for a real backend. Specifically: every operation that changes state (create, move, resize, reorder, delete, toggle) must have a REST API endpoint. The Evaluator tests your app via browser automation AND API calls. If an interaction is hard to test via UI click (drag-and-drop, canvas operations), the Evaluator will verify via your API instead. Missing API endpoints = untestable features = FAIL.
 2. **Build everything in the sprint contract.** Implement all criteria, not just some. You have the capability to build a complete sprint in one session.
 3. **No placeholders, no stubs, no TODOs.** Every function must have a complete implementation. "// TODO: implement later" is forbidden. If a feature is in the sprint contract, build it fully. If it's not, don't create a stub for it.
 4. **Search before creating.** Before writing a new component, utility, or API endpoint, search the codebase to check if it already exists. Duplicate implementations cause bugs. Use Grep/Glob to verify.

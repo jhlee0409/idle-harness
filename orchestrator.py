@@ -643,7 +643,7 @@ class Orchestrator:
         # Reject PASS if too many criteria were skipped as automation-limited
         if passed:
             limited, total = _parse_automation_limited(best_eval)
-            if total > 0 and limited / total > 0.10:
+            if total > 0 and limited / total > 0.05:
                 _log("Evaluator",
                      f"{label} — Verdict was PASS but {limited}/{total} criteria "
                      f"({int(limited/total*100)}%) marked automation-limited. "
