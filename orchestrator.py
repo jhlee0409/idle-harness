@@ -1174,9 +1174,14 @@ def _print_build_summary(output_dir: str):
     has_backend = os.path.isdir(os.path.join(output_dir, "backend"))
     has_frontend = os.path.isdir(os.path.join(output_dir, "frontend"))
 
-    # Count recent git commits
+    # Count git commits
+    count_result = subprocess.run(
+        ["git", "rev-list", "--count", "HEAD"],
+        cwd=output_dir, capture_output=True, text=True,
+    )
+    total_commits = int(count_result.stdout.strip()) if count_result.returncode == 0 and count_result.stdout.strip() else 0
     result = subprocess.run(
-        ["git", "log", "--oneline", "-5"],
+        ["git", "log", "--oneline", "-3"],
         cwd=output_dir, capture_output=True, text=True,
     )
     commits = result.stdout.strip().split("\n") if result.returncode == 0 and result.stdout.strip() else []
@@ -1189,9 +1194,9 @@ def _print_build_summary(output_dir: str):
     stack = " + ".join(parts) if parts else "project"
 
     print(f"    {_C.DIM}Stack: {stack}{_C.RESET}")
-    if commits:
-        print(f"    {_C.DIM}Recent commits: {len(commits)}{_C.RESET}")
-        for c in commits[:3]:
+    if total_commits:
+        print(f"    {_C.DIM}Commits: {total_commits}{_C.RESET}")
+        for c in commits:
             print(f"    {_C.DIM}  {c}{_C.RESET}")
 
 
