@@ -1417,7 +1417,7 @@ async def test_parallel_eval_handles_crash():
 
         call_count = 0
 
-        async def mock_run_eval(evaluator_id, is_lead, criteria_text, screenshots_dir, prev_eval_section):
+        async def mock_run_eval(evaluator_id, is_lead, criteria_text, screenshots_dir, prev_eval_section, eval_output_path=""):
             nonlocal call_count
             call_count += 1
             if evaluator_id == 0:

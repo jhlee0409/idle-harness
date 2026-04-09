@@ -689,9 +689,19 @@ class Orchestrator:
         self, evaluator_id: int, is_lead: bool,
         criteria_text: str, screenshots_dir: str,
         prev_eval_section: str,
+        eval_output_path: str = "",
     ) -> str:
         """Run one evaluator agent. Returns evaluation text."""
         os.makedirs(screenshots_dir, exist_ok=True)
+
+        # Each parallel evaluator writes to its OWN file (not shared evaluation.md)
+        write_instruction = ""
+        if eval_output_path:
+            write_instruction = (
+                f"\n\nIMPORTANT: Write your complete evaluation to this EXACT path "
+                f"using the Write tool: {eval_output_path}\n"
+                f"Also include the full evaluation in your text response."
+            )
 
         if is_lead:
             prompt = (
@@ -703,6 +713,7 @@ class Orchestrator:
                 f"Write BOTH Feature Testing checkboxes AND the full Quality Assessment "
                 f"(Frontend + Backend tables, Evidence, Evidence Audit, Verdict, Required Changes).\n"
                 f"Navigate to {CONFIG['dev_server_url']}."
+                f"{write_instruction}"
                 f"{prev_eval_section}"
             )
         else:
@@ -714,6 +725,7 @@ class Orchestrator:
                 f"Write Feature Testing checkboxes ONLY (no Quality Assessment — "
                 f"another evaluator handles that).\n"
                 f"Navigate to {CONFIG['dev_server_url']}."
+                f"{write_instruction}"
                 f"{prev_eval_section}"
             )
 
@@ -728,10 +740,15 @@ class Orchestrator:
         )
         self._track_cost(result, "eval")
 
-        # In parallel mode, use the agent's text response directly.
-        # Do NOT check disk — all parallel evaluators can overwrite the same
-        # evaluation.md via Write tool, causing criteria loss.
-        return result.result
+        # Use whichever source has more criteria: text response or per-evaluator disk file
+        agent_response = result.result
+        disk_eval = _read_file_optional(eval_output_path) if eval_output_path else ""
+        _, response_criteria = _parse_eval_score(agent_response)
+        _, disk_criteria = _parse_eval_score(disk_eval)
+
+        if disk_criteria > response_criteria:
+            return disk_eval
+        return agent_response
 
     async def _evaluate_parallel(
         self, sprint: Sprint, contract_path: str,
@@ -783,10 +800,11 @@ class Orchestrator:
         start = time.time()
 
         try:
-            # Launch all evaluators concurrently
+            # Launch all evaluators concurrently, each with its own output file
             tasks = []
             for i in range(n_evaluators):
                 screenshots_dir = os.path.join(sprint_dir, "screenshots", f"eval-{i}")
+                eval_output = os.path.join(sprint_dir, f"evaluation_part_{i}.md")
                 tasks.append(
                     self._run_single_evaluator(
                         evaluator_id=i,
@@ -794,6 +812,7 @@ class Orchestrator:
                         criteria_text=evaluator_criteria[i],
                         screenshots_dir=screenshots_dir,
                         prev_eval_section=prev_sections[i],
+                        eval_output_path=eval_output,
                     )
                 )
 
@@ -817,11 +836,13 @@ class Orchestrator:
                     fb_tasks = []
                     for i in range(fallback_n):
                         fb_dir = os.path.join(sprint_dir, "screenshots", f"eval-fb-{i}")
+                        fb_output = os.path.join(sprint_dir, f"evaluation_fb_{i}.md")
                         fb_tasks.append(self._run_single_evaluator(
                             evaluator_id=i, is_lead=(i == 0),
                             criteria_text=merged_criteria[i],
                             screenshots_dir=fb_dir,
                             prev_eval_section=prev_sections[i] if i < len(prev_sections) else "",
+                            eval_output_path=fb_output,
                         ))
                     results = await asyncio.gather(*fb_tasks, return_exceptions=True)
                     all_crashed = all(isinstance(r, Exception) for r in results)
@@ -833,10 +854,12 @@ class Orchestrator:
                     all_criteria = "\n\n".join(s.raw_text for b in buckets for s in b)
                     fb_dir = os.path.join(sprint_dir, "screenshots", "eval-single-fb")
                     try:
+                        fb_single_output = os.path.join(sprint_dir, "evaluation_fb_single.md")
                         single_result = await self._run_single_evaluator(
                             evaluator_id=0, is_lead=True,
                             criteria_text=all_criteria, screenshots_dir=fb_dir,
                             prev_eval_section=prev_sections[0] if prev_sections else "",
+                            eval_output_path=fb_single_output,
                         )
                         results = [single_result]
                         all_sections = [s for b in buckets for s in b]
