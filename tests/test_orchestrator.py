@@ -1436,3 +1436,115 @@ async def test_parallel_eval_handles_crash():
         with open(eval_path) as f:
             content = f.read()
         assert "evaluator crashed" in content
+
+
+# --- Parallel eval hardening tests ---
+
+def test_assign_sections_caps_at_3_total():
+    """Max 3 evaluators total (1 lead + 2 feature)."""
+    sections = [
+        CriteriaSection("Visual Design", "- [ ] a\n" * 10, 10),
+        CriteriaSection("Responsive Design", "- [ ] b\n" * 5, 5),
+        CriteriaSection("P0: A", "- [ ] c\n" * 20, 20),
+        CriteriaSection("P0: B", "- [ ] d\n" * 20, 20),
+        CriteriaSection("P1: C", "- [ ] e\n" * 20, 20),
+        CriteriaSection("P1: D", "- [ ] f\n" * 20, 20),
+        CriteriaSection("P2: E", "- [ ] g\n" * 15, 15),
+    ]
+    buckets = assign_sections_to_evaluators(sections, target_per_evaluator=25)
+    # 1 lead + max 2 feature = 3 total
+    assert len(buckets) <= 3
+
+
+@pytest.mark.anyio
+async def test_feature_evaluator_uses_sonnet():
+    """Non-lead evaluators should use Sonnet, lead uses Opus."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        captured_models = []
+
+        async def mock_call_agent(**kwargs):
+            captured_models.append(kwargs.get("model"))
+            return _mock_result("- [x] test | s/a.png")
+
+        with patch("orchestrator.call_agent", side_effect=mock_call_agent):
+            # Lead evaluator (is_lead=True)
+            await orch._run_single_evaluator(0, True, "- [ ] test", "/tmp/s", "")
+            # Feature evaluator (is_lead=False)
+            await orch._run_single_evaluator(1, False, "- [ ] test", "/tmp/s", "")
+
+        # Lead should use evaluator model (Opus by default)
+        from config import resolve_agent_model
+        assert captured_models[0] == resolve_agent_model("evaluator")
+        # Feature should use Sonnet
+        assert captured_models[1] == "claude-sonnet-4-6"
+
+
+@pytest.mark.anyio
+async def test_regression_skips_zero_total_scores():
+    """Crash-generated 0% scores should not trigger regression detection."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Foundation", features=["Login"], goal="Test")
+
+        orch._generator_session_id = "existing-session"
+        # Real score, then crash score (0 total)
+        orch.state.add_eval_score(1, 1, 80, 100)
+        orch.state.add_eval_score(1, 2, 0, 0)  # crash — 0 total
+
+        orch._check_regression(sprint, "Sprint 1")
+
+        # Session should NOT be reset (crash score ignored)
+        assert orch._generator_session_id == "existing-session"
+
+
+@pytest.mark.anyio
+async def test_merge_validation_detects_lost_criteria():
+    """Post-merge validation should log when criteria are lost."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        from sprint import Sprint
+        sprint = Sprint(number=1, name="Full Build")
+        sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
+        os.makedirs(sprint_dir, exist_ok=True)
+        contract_path = os.path.join(sprint_dir, "sprint_contract.md")
+        with open(contract_path, "w") as f:
+            f.write("### A\n- [ ] c1\n- [ ] c2\n### B\n- [ ] c3")
+
+        # Bucket with 3 criteria total
+        buckets = [
+            [CriteriaSection("A", "### A\n- [ ] c1\n- [ ] c2", 2)],
+            [CriteriaSection("B", "### B\n- [ ] c3", 1)],
+        ]
+
+        # Evaluator 0 returns 2 criteria, evaluator 1 returns empty (lost 1)
+        async def mock_run(evaluator_id, is_lead, criteria_text, screenshots_dir, prev_eval_section, eval_output_path=""):
+            if evaluator_id == 0:
+                return "- [x] c1 | s/a.png\n- [ ] c2 ← FAIL | s/b.png\n### Verdict: FAIL"
+            return ""  # empty — criteria lost
+
+        with patch.object(orch, "_run_single_evaluator", side_effect=mock_run), \
+             patch.object(orch, "server"):
+            passed = await orch._evaluate_parallel(sprint, contract_path, buckets)
+
+        # Check harness.log for the warning
+        log_path = os.path.join(orch.output_dir, "harness.log")
+        with open(log_path) as f:
+            log = f.read()
+        assert "Merge lost" in log
