@@ -170,49 +170,28 @@ def merge_evaluations(
 ) -> str:
     """Merge N evaluator outputs into single evaluation.md.
 
-    - Feature Testing checkboxes: concatenated from all evaluators
-    - Quality Assessment + Verdict + Required Changes: from lead evaluator
-    - Feature Pass Rate: recomputed from merged checkboxes
+    Preserves full text from each evaluator (prose, tables, evidence).
+    Recomputes Feature Pass Rate from merged checkboxes.
     """
     if len(eval_texts) == 1:
         return eval_texts[0]
 
-    # Extract feature testing lines (checkboxes) from all evaluators
-    all_criteria_lines = []
-    all_section_blocks = []
+    # Concatenate full text from all evaluators (preserves all content)
+    feature_sections = []
     for i, text in enumerate(eval_texts):
         if not text:
             continue
-        # Collect all lines with checkboxes and their section headers
-        for line in text.split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("### ") or stripped.startswith("#### "):
-                all_section_blocks.append(line)
-            elif re.match(r"^\s*- \[[x ]\] ", stripped):
-                all_criteria_lines.append(line)
-                all_section_blocks.append(line)
+        feature_sections.append(f"--- Evaluator {i} ---\n\n{text}")
 
-    # Get Quality Assessment, Evidence, Verdict, Required Changes from lead
-    lead_text = eval_texts[lead_index] if lead_index < len(eval_texts) else ""
-    quality_section = ""
-    in_quality = False
-    for line in lead_text.split("\n"):
-        if re.match(r"^#{1,4}\s*(Quality Assessment|Evidence Audit|Regression Analysis|Verdict|Required Changes)", line):
-            in_quality = True
-        if in_quality:
-            quality_section += line + "\n"
-
-    # Recompute pass rate
-    passed = len([l for l in all_criteria_lines if re.match(r"^\s*- \[x\] ", l.strip())])
-    total = len(all_criteria_lines)
+    # Recompute pass rate across all evaluators
+    combined = "\n\n".join(feature_sections)
+    passed = len(re.findall(r"^\s*- \[x\] ", combined, re.MULTILINE))
+    total = passed + len(re.findall(r"^\s*- \[ \] ", combined, re.MULTILINE))
     pct = int(passed / total * 100) if total > 0 else 0
 
-    # Build merged output
     merged = "## Application Evaluation (Parallel)\n\n"
-    merged += "### Feature Testing\n\n"
-    merged += "\n".join(all_section_blocks) + "\n\n"
     merged += f"### Feature Pass Rate: {passed}/{total} ({pct}%)\n\n"
-    merged += quality_section
+    merged += combined
 
     return merged
 
@@ -805,19 +784,21 @@ class Orchestrator:
             text = "\n\n".join(s.raw_text for s in bucket)
             evaluator_criteria.append(text)
 
-        # Build previous eval section per evaluator (filtered to matching sections)
-        prev_sections = []
-        for bucket in buckets:
-            if not prev_eval:
-                prev_sections.append("")
-                continue
-            section_hint = (
+        # Build previous eval section (same for all evaluators — full prev eval)
+        prev_eval_section = ""
+        if prev_eval and _count_criteria(prev_eval) > 0:
+            prev_eval_section = (
                 f"\n\n## Previous Evaluation (attempt {attempt - 1})\n\n"
-                f"Compare your findings against the previous evaluation. "
-                f"Label regressions (was PASS, now FAIL), fixes, persistent failures.\n\n"
+                f"Compare your findings against this previous evaluation. "
+                f"For each criterion:\n"
+                f"- If it was PASS before and is now FAIL, label it **REGRESSION** — "
+                f"this is critical, the Generator broke something that worked.\n"
+                f"- If it was FAIL before and is now PASS, label it **FIXED**.\n"
+                f"- If it was FAIL before and is still FAIL, label it **PERSISTENT**.\n\n"
+                f"In your Required Changes section, prioritize regressions first, "
+                f"then persistent failures. For each change, note its blast radius.\n\n"
                 f"Previous evaluation:\n{prev_eval}"
             )
-            prev_sections.append(section_hint)
 
         # Start server once for all evaluators
         _log("Evaluator", f"{label} — Starting servers...")
@@ -837,7 +818,7 @@ class Orchestrator:
                         is_lead=(i == 0),
                         criteria_text=evaluator_criteria[i],
                         screenshots_dir=screenshots_dir,
-                        prev_eval_section=prev_sections[i],
+                        prev_eval_section=prev_eval_section,
                         eval_output_path=eval_output,
                     )
                 )
@@ -867,7 +848,7 @@ class Orchestrator:
                             evaluator_id=i, is_lead=(i == 0),
                             criteria_text=merged_criteria[i],
                             screenshots_dir=fb_dir,
-                            prev_eval_section=prev_sections[i] if i < len(prev_sections) else "",
+                            prev_eval_section=prev_eval_section,
                             eval_output_path=fb_output,
                         ))
                     results = await asyncio.gather(*fb_tasks, return_exceptions=True)
@@ -884,7 +865,7 @@ class Orchestrator:
                         single_result = await self._run_single_evaluator(
                             evaluator_id=0, is_lead=True,
                             criteria_text=all_criteria, screenshots_dir=fb_dir,
-                            prev_eval_section=prev_sections[0] if prev_sections else "",
+                            prev_eval_section=prev_eval_section,
                             eval_output_path=fb_single_output,
                         )
                         results = [single_result]
