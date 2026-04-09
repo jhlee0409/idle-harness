@@ -1548,3 +1548,33 @@ async def test_merge_validation_detects_lost_criteria():
         with open(log_path) as f:
             log = f.read()
         assert "Merge lost" in log
+
+
+# --- Evaluator empty response retry ---
+
+@pytest.mark.anyio
+async def test_evaluator_retries_on_zero_criteria():
+    """If evaluator returns 0 criteria, it should retry once."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orch = _setup_orch(tmpdir)
+        with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
+            f.write(SAMPLE_SPEC)
+        orch._spec = None
+        orch._init_output()
+
+        call_count = 0
+
+        async def mock_call_agent(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _mock_result("Evaluation complete.")  # 0 criteria
+            return _mock_result("- [x] Login works | s/a.png\n### Verdict: PASS")
+
+        with patch("orchestrator.call_agent", side_effect=mock_call_agent):
+            result = await orch._run_single_evaluator(
+                0, True, "- [ ] Login works", "/tmp/s", ""
+            )
+
+        assert call_count == 2  # first call + retry
+        assert "- [x] Login works" in result

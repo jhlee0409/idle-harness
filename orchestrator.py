@@ -746,11 +746,32 @@ class Orchestrator:
         self._track_cost(result, "eval")
 
         # Use whichever source has more criteria: text response or per-evaluator disk file
-        agent_response = result.result
+        best = self._pick_best_eval(result.result, eval_output_path)
+
+        # Validation: if both sources have 0 criteria, retry once
+        _, criteria_count = _parse_eval_score(best)
+        if criteria_count == 0:
+            _log("Evaluator", f"Evaluator {evaluator_id} returned 0 criteria. Retrying once...")
+            retry_result = await call_agent(
+                system_prompt=self.evaluator_prompt,
+                user_prompt=prompt,
+                allowed_tools=TOOLS_EVALUATOR,
+                mcp_servers=CONFIG.get("mcp_servers"),
+                cwd=self.root,
+                timeout=CONFIG["agent_timeout_eval"],
+                model=eval_model,
+            )
+            self._track_cost(retry_result, "eval")
+            best = self._pick_best_eval(retry_result.result, eval_output_path)
+
+        return best
+
+    @staticmethod
+    def _pick_best_eval(agent_response: str, eval_output_path: str) -> str:
+        """Return whichever has more criteria: text response or disk file."""
         disk_eval = _read_file_optional(eval_output_path) if eval_output_path else ""
         _, response_criteria = _parse_eval_score(agent_response)
         _, disk_criteria = _parse_eval_score(disk_eval)
-
         if disk_criteria > response_criteria:
             return disk_eval
         return agent_response
