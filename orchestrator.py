@@ -149,7 +149,7 @@ def assign_sections_to_evaluators(
     # Calculate how many feature evaluators we need
     feature_total = sum(s.criteria_count for s in feature_sections)
     n_feature = max(1, round(feature_total / target_per_evaluator))
-    n_feature = min(n_feature, 5)  # cap at 5 feature evaluators
+    n_feature = min(n_feature, 2)  # cap at 2 feature evaluators (+ 1 lead = 3 total)
 
     # Distribute feature sections round-robin
     buckets: list[list[CriteriaSection]] = [[] for _ in range(n_feature)]
@@ -729,6 +729,11 @@ class Orchestrator:
                 f"{prev_eval_section}"
             )
 
+        # Lead evaluator uses Opus (Quality Assessment needs strong reasoning).
+        # Feature evaluators use Sonnet (click, screenshot, checkbox — adequate).
+        # This reduces API rate limit pressure (Opus has lower throughput limits).
+        eval_model = resolve_agent_model("evaluator") if is_lead else "claude-sonnet-4-6"
+
         result = await call_agent(
             system_prompt=self.evaluator_prompt,
             user_prompt=prompt,
@@ -736,7 +741,7 @@ class Orchestrator:
             mcp_servers=CONFIG.get("mcp_servers"),
             cwd=self.root,
             timeout=CONFIG["agent_timeout_eval"],
-            model=resolve_agent_model("evaluator"),
+            model=eval_model,
         )
         self._track_cost(result, "eval")
 
@@ -890,6 +895,15 @@ class Orchestrator:
             # Merge all results
             best_eval = merge_evaluations(eval_texts, lead_index=0)
 
+            # Validate: did we lose criteria during merge?
+            input_criteria = sum(s.criteria_count for b in buckets for s in b)
+            _, output_criteria = _parse_eval_score(best_eval)
+            if output_criteria < input_criteria:
+                lost = input_criteria - output_criteria
+                _log("Evaluator", f"{label} — ⚠ Merge lost {lost} criteria "
+                     f"({output_criteria}/{input_criteria} recovered). "
+                     f"Some evaluators may have returned empty responses.")
+
             with open(eval_path, "w") as f:
                 f.write(best_eval)
             _save_agent_response(
@@ -898,6 +912,8 @@ class Orchestrator:
         finally:
             _log("Evaluator", f"{label} — Stopping servers...")
             self.server.stop()
+            # Kill zombie Chromium/Playwright from parallel MCP instances
+            _cleanup_playwright()
 
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "eval", elapsed)
@@ -2047,6 +2063,18 @@ def _log(agent: str, msg: str):
         clean = re.sub(r"\033\[[0-9;]*m", "", msg)
         _log_file.write(f"[{ts}] [{agent}] {clean}\n")
         _log_file.flush()
+
+
+def _cleanup_playwright():
+    """Kill zombie Chromium/Playwright processes left by MCP servers."""
+    try:
+        subprocess.run(
+            "pkill -f 'chromium.*--headless' 2>/dev/null; "
+            "pkill -f 'playwright' 2>/dev/null",
+            shell=True, capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
 
 
 def _save_agent_response(directory: str, filename: str, text: str):
