@@ -754,11 +754,6 @@ class Orchestrator:
                 f"{prev_eval_section}"
             )
 
-        # Lead evaluator uses Opus (Quality Assessment needs strong reasoning).
-        # Feature evaluators use Sonnet (click, screenshot, checkbox — adequate).
-        # This reduces API rate limit pressure (Opus has lower throughput limits).
-        eval_model = resolve_agent_model("evaluator") if is_lead else "claude-sonnet-4-6"
-
         result = await call_agent(
             system_prompt=self.evaluator_prompt,
             user_prompt=prompt,
@@ -766,7 +761,7 @@ class Orchestrator:
             mcp_servers=CONFIG.get("mcp_servers"),
             cwd=self.root,
             timeout=CONFIG["agent_timeout_eval"],
-            model=eval_model,
+            model=resolve_agent_model("evaluator"),
         )
         self._track_cost(result, "eval")
 
@@ -784,7 +779,7 @@ class Orchestrator:
                 mcp_servers=CONFIG.get("mcp_servers"),
                 cwd=self.root,
                 timeout=CONFIG["agent_timeout_eval"],
-                model=eval_model,
+                model=resolve_agent_model("evaluator"),
             )
             self._track_cost(retry_result, "eval")
             best = self._pick_best_eval(retry_result.result, eval_output_path)
@@ -853,22 +848,23 @@ class Orchestrator:
         start = time.time()
 
         try:
-            # Launch all evaluators concurrently, each with its own output file
-            tasks = []
-            for i in range(n_evaluators):
+            # Launch evaluators with staggered start (10s between each)
+            # to avoid API rate limit spikes from simultaneous requests
+            async def _staggered_eval(i, delay):
+                if delay > 0:
+                    await asyncio.sleep(delay)
                 screenshots_dir = os.path.join(sprint_dir, "screenshots", f"eval-{i}")
                 eval_output = os.path.join(sprint_dir, f"evaluation_part_{i}.md")
-                tasks.append(
-                    self._run_single_evaluator(
-                        evaluator_id=i,
-                        is_lead=(i == 0),
-                        criteria_text=evaluator_criteria[i],
-                        screenshots_dir=screenshots_dir,
-                        prev_eval_section=prev_eval_section,
-                        eval_output_path=eval_output,
-                    )
+                return await self._run_single_evaluator(
+                    evaluator_id=i,
+                    is_lead=(i == 0),
+                    criteria_text=evaluator_criteria[i],
+                    screenshots_dir=screenshots_dir,
+                    prev_eval_section=prev_eval_section,
+                    eval_output_path=eval_output,
                 )
 
+            tasks = [_staggered_eval(i, i * 10) for i in range(n_evaluators)]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Progressive fallback: if ALL evaluators crashed, retry with fewer

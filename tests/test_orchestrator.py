@@ -1457,8 +1457,8 @@ def test_assign_sections_caps_at_3_total():
 
 
 @pytest.mark.anyio
-async def test_feature_evaluator_uses_sonnet():
-    """Non-lead evaluators should use Sonnet, lead uses Opus."""
+async def test_all_evaluators_use_same_model():
+    """All evaluators (lead and feature) should use the configured evaluator model."""
     with tempfile.TemporaryDirectory() as tmpdir:
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
@@ -1473,16 +1473,13 @@ async def test_feature_evaluator_uses_sonnet():
             return _mock_result("- [x] test | s/a.png")
 
         with patch("orchestrator.call_agent", side_effect=mock_call_agent):
-            # Lead evaluator (is_lead=True)
             await orch._run_single_evaluator(0, True, "- [ ] test", "/tmp/s", "")
-            # Feature evaluator (is_lead=False)
             await orch._run_single_evaluator(1, False, "- [ ] test", "/tmp/s", "")
 
-        # Lead should use evaluator model (Opus by default)
         from config import resolve_agent_model
-        assert captured_models[0] == resolve_agent_model("evaluator")
-        # Feature should use Sonnet
-        assert captured_models[1] == "claude-sonnet-4-6"
+        expected = resolve_agent_model("evaluator")
+        assert captured_models[0] == expected
+        assert captured_models[1] == expected
 
 
 @pytest.mark.anyio
