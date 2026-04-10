@@ -116,23 +116,19 @@ async def call_agent(
     start = time.time()
 
     def _print_status():
+        if status_label:
+            return  # Parallel mode: suppress per-agent status (floods terminal)
         elapsed = fmt_elapsed(int(time.time() - start))
         total_tok = fmt_tokens(input_tokens + output_tokens)
-        prefix = f"    ↳ [{status_label}] " if status_label else "    ↳ "
-        status = f"{prefix}{elapsed} | {turn_count} turns | {total_tok} tokens"
+        status = f"    ↳ {elapsed} | {turn_count} turns | {total_tok} tokens"
         if cost_usd > 0:
             status += f" | ${cost_usd:.2f}"
-        if status_label:
-            # Parallel mode: print on separate lines to avoid overwrite
-            sys.stdout.write(f"\r{status}    \n")
-        else:
-            sys.stdout.write(f"\r{status}    ")
+        sys.stdout.write(f"\r{status}    ")
         sys.stdout.flush()
 
     async def _ticker():
-        interval = 10 if status_label else 1  # less frequent in parallel mode
         while True:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(1)
             _print_status()
 
     ticker_task = asyncio.create_task(_ticker())
