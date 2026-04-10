@@ -55,8 +55,8 @@ class DevServer:
             cmd,
             shell=True,
             cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             preexec_fn=os.setsid,
         ))
 
@@ -94,10 +94,8 @@ class DevServer:
 
         for proc in self.processes:
             if proc.poll() is not None:
-                stderr = proc.stderr.read().decode() if proc.stderr else ""
                 raise RuntimeError(
-                    f"Dev server process exited with code {proc.returncode}. "
-                    f"stderr: {stderr[:500]}"
+                    f"Dev server process exited with code {proc.returncode}."
                 )
 
         raise RuntimeError(

@@ -364,7 +364,8 @@ async def test_retry_stops_on_infra_error():
         async def mock_evaluate(s, cp):
             raise InfraError("JSON message exceeded maximum buffer size of 1048576 bytes")
 
-        with patch.object(orch, "build", side_effect=mock_build), \
+        with patch.object(orch, "server", MagicMock()), \
+             patch.object(orch, "build", side_effect=mock_build), \
              patch.object(orch, "evaluate", side_effect=mock_evaluate), \
              patch.object(orch, "verify", AsyncMock(return_value=None)), \
              patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))):
@@ -430,7 +431,8 @@ async def test_retry_asks_user_on_max_failures_abort():
         mock_build = AsyncMock()
         mock_eval = AsyncMock(return_value=False)  # evaluate returns bool
 
-        with patch.object(orch, "build", mock_build), \
+        with patch.object(orch, "server", MagicMock()), \
+             patch.object(orch, "build", mock_build), \
              patch.object(orch, "evaluate", mock_eval), \
              patch.object(orch, "verify", AsyncMock(return_value=None)), \
              patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))), \
@@ -566,6 +568,7 @@ async def test_run_simple_generates_criteria():
             return True
 
         with patch.object(orch, "generate_criteria", side_effect=mock_generate_criteria), \
+             patch.object(orch, "server", MagicMock()), \
              patch.object(orch, "build", side_effect=mock_build), \
              patch.object(orch, "evaluate", side_effect=mock_evaluate), \
              patch.object(orch, "verify", AsyncMock(return_value=None)), \
@@ -685,7 +688,8 @@ async def test_retry_stops_on_timeout():
         async def mock_evaluate(s, cp):
             raise AgentTimeout("Agent timed out after 45m")
 
-        with patch.object(orch, "build", side_effect=mock_build), \
+        with patch.object(orch, "server", MagicMock()), \
+             patch.object(orch, "build", side_effect=mock_build), \
              patch.object(orch, "evaluate", side_effect=mock_evaluate), \
              patch.object(orch, "verify", AsyncMock(return_value=None)), \
              patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))):
@@ -770,7 +774,8 @@ async def test_verifier_fail_skips_evaluate():
         async def mock_verify(s, cp):
             return vresult
 
-        with patch.object(orch, "build", side_effect=mock_build), \
+        with patch.object(orch, "server", MagicMock()), \
+             patch.object(orch, "build", side_effect=mock_build), \
              patch.object(orch, "evaluate", side_effect=mock_evaluate), \
              patch.object(orch, "verify", side_effect=mock_verify), \
              patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))), \
@@ -817,7 +822,8 @@ async def test_verifier_pass_proceeds_to_evaluate():
         async def mock_verify(s, cp):
             return vresult
 
-        with patch.object(orch, "build", side_effect=mock_build), \
+        with patch.object(orch, "server", MagicMock()), \
+             patch.object(orch, "build", side_effect=mock_build), \
              patch.object(orch, "evaluate", side_effect=mock_evaluate), \
              patch.object(orch, "verify", side_effect=mock_verify), \
              patch.object(orch, "_smoke_test", AsyncMock(return_value=(True, "OK"))):
@@ -971,7 +977,8 @@ async def test_smoke_test_fail_skips_eval():
             eval_called = True
             return True
 
-        with patch.object(orch, "build", side_effect=mock_build), \
+        with patch.object(orch, "server", MagicMock()), \
+             patch.object(orch, "build", side_effect=mock_build), \
              patch.object(orch, "evaluate", side_effect=mock_evaluate), \
              patch.object(orch, "verify", AsyncMock(return_value=None)), \
              patch.object(orch, "_smoke_test", AsyncMock(return_value=(False, "Server crashed"))), \

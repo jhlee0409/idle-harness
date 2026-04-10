@@ -26,8 +26,21 @@ class HarnessState:
         try:
             with open(self.path, "r") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            # Corrupted or missing — re-initialize
+        except json.JSONDecodeError:
+            # Corrupted — backup and re-initialize
+            import shutil
+            backup = self.path + ".corrupted"
+            try:
+                shutil.copy2(self.path, backup)
+            except OSError:
+                pass
+            import sys
+            print(f"⚠ WARNING: {self.path} corrupted, backed up to {backup}, re-initializing",
+                  file=sys.stderr)
+            data = self._default_data()
+            self._save(data)
+            return data
+        except FileNotFoundError:
             data = self._default_data()
             self._save(data)
             return data

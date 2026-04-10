@@ -284,8 +284,21 @@ def merge_evaluations(
     lead_text = eval_texts[lead_index] if lead_index < len(eval_texts) else ""
     lead_sections = _extract_lead_sections(lead_text)
 
-    # 5. Extract and renumber Required Changes from lead
+    # 5. Extract Required Changes from lead + feature evaluator FAIL summaries
     changes = _extract_required_changes(lead_text)
+
+    # Collect FAIL criteria from non-lead evaluators as supplementary changes
+    for i, text in enumerate(eval_texts):
+        if i == lead_index or not text:
+            continue
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if re.match(r"^\s*- \[ \] ", stripped):
+                # Extract criterion text as a change item
+                criterion = re.sub(r"^\s*- \[ \] ", "", stripped).split(" ← ")[0].split(" | ")[0]
+                if criterion and len(criterion) > 10:
+                    changes.append(f"[Feature eval {i}] {criterion}")
+
     changes_section = ""
     if changes:
         numbered = []
@@ -965,9 +978,7 @@ class Orchestrator:
                 f"Previous evaluation:\n{prev_eval}"
             )
 
-        # Start server once for all evaluators
-        _log("Evaluator", f"{label} — Starting servers...")
-        self.server.start()
+        # Server already started by _retry_build_eval (shared with smoke test)
         _log("Evaluator", f"{label} — Testing (attempt {attempt}, {n_evaluators} parallel)...")
         start = time.time()
 
@@ -1096,8 +1107,6 @@ class Orchestrator:
                 sprint_dir, f"evaluation_attempt_{attempt}.md", best_eval,
             )
         finally:
-            _log("Evaluator", f"{label} — Stopping servers...")
-            self.server.stop()
             # Kill zombie Chromium/Playwright from parallel MCP instances
             _cleanup_playwright()
 
@@ -1170,8 +1179,6 @@ class Orchestrator:
                 )
 
         label = self._sprint_label(sprint)
-        _log("Evaluator", f"{label} — Starting servers...")
-        self.server.start()
         _log("Evaluator", f"{label} — Testing (attempt {attempt})...")
         start = time.time()
         is_simple = sprint.name == "Full Build"
@@ -1241,8 +1248,7 @@ class Orchestrator:
                 best_eval,
             )
         finally:
-            _log("Evaluator", f"{label} — Stopping servers...")
-            self.server.stop()
+            pass  # Server stopped by _retry_build_eval
 
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "eval", elapsed)
@@ -1335,42 +1341,25 @@ class Orchestrator:
         return vresult
 
     async def _smoke_test(self) -> tuple[bool, str]:
-        """Quick health check: can the app load and render any UI elements?
+        """Quick health check: can the app load?
 
-        Returns (ok, message). Starts and stops the server internally.
-        Catches crashes that would waste 30+ minutes of Evaluator time.
+        Returns (ok, message). Expects the server to already be running.
+        Does NOT start/stop the server — the caller manages lifecycle.
         """
         import urllib.request
         import urllib.error
 
+        url = CONFIG["dev_server_url"]
         try:
-            self.server.start()
-        except RuntimeError as exc:
-            return False, f"Server failed to start: {exc}"
+            resp = urllib.request.urlopen(url, timeout=10)
+            body = resp.read().decode("utf-8", errors="replace")
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+            return False, f"HTTP request failed: {exc}"
 
-        try:
-            url = CONFIG["dev_server_url"]
-            try:
-                resp = urllib.request.urlopen(url, timeout=10)
-                body = resp.read().decode("utf-8", errors="replace")
-            except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
-                return False, f"HTTP request failed: {exc}"
+        if len(body) < 100:
+            return False, f"Response body too small ({len(body)} bytes) — likely blank page"
 
-            # Check for blank page: the HTML should have a non-empty <div id="root"> or similar
-            if len(body) < 100:
-                return False, f"Response body too small ({len(body)} bytes) — likely blank page"
-
-            # Check for common React/Vue crash indicators
-            if "<div id=\"root\"></div>" in body and "<script" in body:
-                # Empty root div with scripts = React app that hasn't rendered yet
-                # This is normal for SPA — the JS needs to execute.
-                # We can't detect React runtime errors from HTML alone.
-                # Still better than nothing: at least the server responded.
-                pass
-
-            return True, "OK"
-        finally:
-            self.server.stop()
+        return True, "OK"
 
     def _check_regression(self, sprint: Sprint, label: str):
         """Detect eval score regression and reset Generator session if needed.
@@ -1428,35 +1417,55 @@ class Orchestrator:
             try:
                 await self.build(sprint, contract_path)
 
-                # Post-build smoke test before expensive evaluation
-                smoke_ok, smoke_msg = await self._smoke_test()
-                if not smoke_ok:
-                    _log("Harness", f"{label} — SMOKE TEST FAIL: {smoke_msg}")
-                    _log("Harness", f"{label} — Skipping Evaluator (app not functional)")
+                # Start server once — smoke test and evaluate reuse it
+                try:
+                    self.server.start()
+                except RuntimeError as exc:
+                    _log("Harness", f"{label} — Server failed to start: {exc}")
                     sprint_dir = self._sprint_dir(sprint)
                     eval_path = os.path.join(sprint_dir, "evaluation.md")
                     with open(eval_path, "w") as f:
                         f.write(
                             f"## Smoke Test: FAIL\n\n"
-                            f"The application failed a basic health check before full evaluation.\n\n"
-                            f"**Error:** {smoke_msg}\n\n"
+                            f"**Error:** Server failed to start: {exc}\n\n"
                             f"### Verdict: FAIL\n\n"
                             f"### Required Changes\n"
-                            f"1. Fix the app crash so it loads at {CONFIG['dev_server_url']}. "
-                            f"Error details: {smoke_msg}\n"
-                            f"2. After fixing, verify both servers start and the main page loads "
-                            f"before handing off to evaluation.\n"
+                            f"1. Fix server startup. Error: {exc}\n"
                         )
                     passed = False
                     consecutive_crashes = 0
-                else:
-                    vresult = await self.verify(sprint, contract_path)
-                    if vresult is not None and not vresult.overall_pass:
-                        _log("Harness", f"{label} — Verifier FAIL, skipping Evaluator (saving time + cost)")
+                    continue
+
+                try:
+                    # Smoke test with server already running
+                    smoke_ok, smoke_msg = await self._smoke_test()
+                    if not smoke_ok:
+                        _log("Harness", f"{label} — SMOKE TEST FAIL: {smoke_msg}")
+                        _log("Harness", f"{label} — Skipping Evaluator (app not functional)")
+                        sprint_dir = self._sprint_dir(sprint)
+                        eval_path = os.path.join(sprint_dir, "evaluation.md")
+                        with open(eval_path, "w") as f:
+                            f.write(
+                                f"## Smoke Test: FAIL\n\n"
+                                f"**Error:** {smoke_msg}\n\n"
+                                f"### Verdict: FAIL\n\n"
+                                f"### Required Changes\n"
+                                f"1. Fix the app crash so it loads at {CONFIG['dev_server_url']}. "
+                                f"Error: {smoke_msg}\n"
+                            )
                         passed = False
+                        consecutive_crashes = 0
                     else:
-                        passed = await self.evaluate(sprint, contract_path)
-                    consecutive_crashes = 0
+                        vresult = await self.verify(sprint, contract_path)
+                        if vresult is not None and not vresult.overall_pass:
+                            _log("Harness", f"{label} — Verifier FAIL, skipping Evaluator (saving time + cost)")
+                            passed = False
+                        else:
+                            # evaluate() no longer starts server — it's already running
+                            passed = await self.evaluate(sprint, contract_path)
+                        consecutive_crashes = 0
+                finally:
+                    self.server.stop()
             except InfraError as exc:
                 _log("Harness", f"{label} attempt {attempt + 1} INFRA ERROR: {exc}")
                 _log("Harness", f"Infrastructure error — rebuilding won't help. Stopping retries for {label}.")
