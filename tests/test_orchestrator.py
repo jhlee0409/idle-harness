@@ -98,6 +98,28 @@ def test_verdict_fail():
     assert _check_verdict_pass("### Verdict: FAIL") is False
 
 
+def test_verdict_parallel_fail_overrides_pass():
+    """In parallel eval, ANY FAIL verdict = overall FAIL."""
+    merged = (
+        "--- Evaluator 0 ---\n"
+        "### Verdict: FAIL\n"
+        "--- Evaluator 1 ---\n"
+        "### Verdict: PASS\n"
+    )
+    assert _check_verdict_pass(merged) is False
+
+
+def test_verdict_parallel_all_pass():
+    """All evaluators PASS = overall PASS."""
+    merged = (
+        "--- Evaluator 0 ---\n"
+        "### Verdict: PASS\n"
+        "--- Evaluator 1 ---\n"
+        "### Verdict: PASS\n"
+    )
+    assert _check_verdict_pass(merged) is True
+
+
 def test_contract_agreed_strict_match():
     assert _check_contract_agreed("AGREED\nLooks good.") is True
     assert _check_contract_agreed("AGREED") is True

@@ -25,8 +25,14 @@ from verifier import (
 
 
 def _check_verdict_pass(text: str) -> bool:
-    """Match 'Verdict: PASS' only as a standalone markdown heading or line."""
-    return bool(re.search(r"^#{0,3}\s*Verdict:\s*PASS\s*$", text, re.MULTILINE))
+    """Check if overall verdict is PASS.
+
+    In parallel eval, multiple Verdict lines may exist. ANY FAIL = overall FAIL.
+    Only returns True if at least one PASS exists and zero FAILs exist.
+    """
+    has_pass = bool(re.search(r"^#{0,3}\s*Verdict:\s*PASS\s*$", text, re.MULTILINE))
+    has_fail = bool(re.search(r"^#{0,3}\s*Verdict:\s*FAIL\s*$", text, re.MULTILINE))
+    return has_pass and not has_fail
 
 
 def _check_contract_agreed(text: str) -> bool:
