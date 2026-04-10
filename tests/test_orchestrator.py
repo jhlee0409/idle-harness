@@ -1321,16 +1321,17 @@ def test_merge_evaluations_combines_criteria():
         "- [ ] Drag broken ← FAIL | screenshots/e.png\n"
     )
     merged = merge_evaluations([eval_a, eval_b], lead_index=0)
-    # All 5 criteria present
+    # All 5 criteria from both evaluators
     assert "- [x] Background" in merged
     assert "- [ ] Noise grain" in merged
     assert "- [x] Create playlist" in merged
     assert "- [ ] Drag broken" in merged
     # Pass rate recomputed: 3/5
     assert "3/5" in merged
-    # Quality Assessment from lead
+    # Quality Assessment from lead only
     assert "Design Quality" in merged
     assert "Verdict: FAIL" in merged
+    # Required Changes from lead, renumbered
     assert "Add noise grain" in merged
 
 
@@ -1338,6 +1339,60 @@ def test_merge_evaluations_single():
     """Single evaluator returns text unchanged."""
     text = "- [x] Works\n### Verdict: PASS"
     assert merge_evaluations([text]) == text
+
+
+def test_merge_strips_feature_evaluator_verdict():
+    """Feature evaluator's Verdict should NOT appear in merged output."""
+    lead = (
+        "#### Visual Design\n"
+        "- [x] Color OK | s/a.png\n"
+        "### Quality Assessment — Frontend\n"
+        "| Criterion | Verdict |\n| Design Quality | PASS |\n"
+        "### Verdict: FAIL\n"
+        "### Required Changes\n1. Fix noise\n"
+    )
+    feature = (
+        "#### P0: Canvas\n"
+        "- [x] Pan works | s/b.png\n"
+        "### Verdict: PASS\n"  # Feature eval wrote this — should be stripped
+    )
+    merged = merge_evaluations([lead, feature], lead_index=0)
+    # Only ONE Verdict line (from lead)
+    import re
+    verdicts = re.findall(r"^#{0,3}\s*Verdict:\s*(PASS|FAIL)\s*$", merged, re.MULTILINE)
+    assert len(verdicts) == 1
+    assert verdicts[0] == "FAIL"
+
+
+def test_merge_renumbers_required_changes():
+    """Required Changes from lead should be renumbered sequentially."""
+    lead = (
+        "#### Design\n"
+        "- [ ] Broken | s/a.png\n"
+        "### Verdict: FAIL\n"
+        "### Required Changes\n"
+        "3. Fix the thing\n"
+        "7. Fix another thing\n"
+    )
+    merged = merge_evaluations([lead, "#### Other\n- [x] OK | s/b.png"], lead_index=0)
+    assert "1. Fix the thing" in merged
+    assert "2. Fix another thing" in merged
+    # Original numbers should NOT appear
+    assert "3. Fix" not in merged
+    assert "7. Fix" not in merged
+
+
+def test_merge_filters_none_from_changes():
+    """'None' in Required Changes should be excluded in parallel merge."""
+    lead = (
+        "#### Design\n- [x] OK | s/a.png\n"
+        "### Verdict: PASS\n"
+        "### Required Changes\nNone\n"
+    )
+    feature = "#### Canvas\n- [x] Works | s/b.png\n"
+    merged = merge_evaluations([lead, feature], lead_index=0)
+    # "None" should be filtered from Required Changes
+    assert "Required Changes" not in merged  # no changes section if all items are "None"
 
 
 # --- Parallel evaluation dispatch ---
@@ -1439,7 +1494,7 @@ async def test_parallel_eval_handles_crash():
 
         call_count = 0
 
-        async def mock_run_eval(evaluator_id, is_lead, criteria_text, screenshots_dir, prev_eval_section, eval_output_path=""):
+        async def mock_run_eval(evaluator_id, is_lead, criteria_text, screenshots_dir, prev_eval_section, eval_output_path="", section_names=None):
             nonlocal call_count
             call_count += 1
             if evaluator_id == 0:

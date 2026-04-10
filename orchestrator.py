@@ -170,62 +170,139 @@ def assign_sections_to_evaluators(
     return [lead_sections] + buckets
 
 
+_LEAD_ONLY_KEYWORDS = (
+    "quality assessment", "evidence", "verdict",
+    "full-stack verification", "regression analysis",
+)
+
+
+def _extract_checkboxes_by_section(text: str) -> list[tuple[str, str]]:
+    """Extract (section_header, checkbox_line) pairs from evaluator text."""
+    results = []
+    current_section = ""
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("### ") or stripped.startswith("#### "):
+            header = stripped.lstrip("#").strip()
+            # Skip lead-only sections
+            if any(kw in header.lower() for kw in _LEAD_ONLY_KEYWORDS):
+                current_section = ""
+                continue
+            if "pass rate" in header.lower() or "feature testing" in header.lower():
+                continue
+            current_section = header
+        elif current_section and re.match(r"^\s*- \[[x ]\] ", stripped):
+            results.append((current_section, line))
+    return results
+
+
+def _extract_lead_sections(text: str) -> str:
+    """Extract Quality Assessment, Evidence, Verdict from lead evaluator text."""
+    lines = []
+    capture = False
+    for line in text.split("\n"):
+        if re.match(r"^#{1,4}\s", line):
+            header = line.lstrip("#").strip().lower()
+            if any(kw in header for kw in _LEAD_ONLY_KEYWORDS):
+                capture = True
+            elif "required changes" in header:
+                capture = False
+                continue
+            elif capture:
+                capture = False
+        if capture:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _extract_required_changes(text: str) -> list[str]:
+    """Extract individual Required Changes items. Filters out 'None'."""
+    items = []
+    in_changes = False
+    current = []
+    for line in text.split("\n"):
+        if re.match(r"^#{1,4}\s*Required Changes", line):
+            in_changes = True
+            continue
+        if in_changes:
+            if re.match(r"^#{1,4}\s", line) and "Required" not in line:
+                if current:
+                    items.append("\n".join(current))
+                    current = []
+                in_changes = False
+                continue
+            stripped = line.strip()
+            if not stripped or stripped.lower() in ("none", "none.", "n/a"):
+                continue
+            if re.match(r"^\d+[\.\)]\s", stripped):
+                if current:
+                    items.append("\n".join(current))
+                current = [stripped]
+            elif current:
+                current.append(line)
+    if current:
+        items.append("\n".join(current))
+    return items
+
+
 def merge_evaluations(
     eval_texts: list[str],
     lead_index: int = 0,
 ) -> str:
-    """Merge N evaluator outputs into single evaluation.md.
+    """Merge N evaluator outputs into single clean evaluation.
 
-    Preserves full text from each evaluator (prose, tables, evidence).
-    Recomputes Feature Pass Rate from merged checkboxes.
+    Structure:
+    - Feature checkboxes: from ALL evaluators, grouped by section
+    - Quality Assessment, Evidence, Verdict: from lead ONLY
+    - Required Changes: from lead, renumbered
     """
     if len(eval_texts) == 1:
         return eval_texts[0]
 
-    # Concatenate full text from all evaluators (preserves all content)
-    feature_sections = []
-    for i, text in enumerate(eval_texts):
-        if not text:
-            continue
-        feature_sections.append(f"--- Evaluator {i} ---\n\n{text}")
-
-    # Recompute pass rate across all evaluators
-    combined = "\n\n".join(feature_sections)
-    passed = len(re.findall(r"^\s*- \[x\] ", combined, re.MULTILINE))
-    total = passed + len(re.findall(r"^\s*- \[ \] ", combined, re.MULTILINE))
-    pct = int(passed / total * 100) if total > 0 else 0
-
-    # Extract all Required Changes from every evaluator into one consolidated section
-    all_changes = []
+    # 1. Extract checkboxes from all evaluators, grouped by section
+    from collections import OrderedDict
+    sections: OrderedDict[str, list[str]] = OrderedDict()
     for text in eval_texts:
         if not text:
             continue
-        in_changes = False
-        for line in text.split("\n"):
-            if re.match(r"^#{1,4}\s*Required Changes", line):
-                in_changes = True
-                continue
-            if in_changes:
-                # Stop at next heading
-                if re.match(r"^#{1,4}\s", line) and "Required" not in line:
-                    in_changes = False
-                    continue
-                stripped = line.strip()
-                if stripped and stripped not in all_changes:
-                    all_changes.append(stripped)
+        for section, line in _extract_checkboxes_by_section(text):
+            sections.setdefault(section, []).append(line)
 
+    # 2. Build feature testing block
+    feature_block = ""
+    for section, lines in sections.items():
+        feature_block += f"#### {section}\n"
+        feature_block += "\n".join(lines) + "\n\n"
+
+    # 3. Compute pass rate from all checkboxes
+    all_lines = [l for lines in sections.values() for l in lines]
+    passed = sum(1 for l in all_lines if re.match(r"^\s*- \[x\]", l))
+    total = len(all_lines)
+    pct = int(passed / total * 100) if total > 0 else 0
+
+    # 4. Extract lead-only sections
+    lead_text = eval_texts[lead_index] if lead_index < len(eval_texts) else ""
+    lead_sections = _extract_lead_sections(lead_text)
+
+    # 5. Extract and renumber Required Changes from lead
+    changes = _extract_required_changes(lead_text)
     changes_section = ""
-    if all_changes:
-        changes_section = (
-            "\n\n### Required Changes (consolidated from all evaluators)\n"
-            + "\n".join(all_changes)
-            + "\n"
-        )
+    if changes:
+        numbered = []
+        for idx, change in enumerate(changes, 1):
+            renumbered = re.sub(r"^\d+[\.\)]\s*", "", change, count=1)
+            numbered.append(f"{idx}. {renumbered}")
+        changes_section = "### Required Changes\n" + "\n".join(numbered) + "\n"
 
+    # 6. Assemble
     merged = "## Application Evaluation (Parallel)\n\n"
     merged += f"### Feature Pass Rate: {passed}/{total} ({pct}%)\n\n"
-    merged += combined
-    merged += changes_section
+    merged += "### Feature Testing\n\n"
+    merged += feature_block
+    if lead_sections:
+        merged += lead_sections + "\n\n"
+    if changes_section:
+        merged += changes_section
 
     return merged
 
@@ -721,6 +798,7 @@ class Orchestrator:
         criteria_text: str, screenshots_dir: str,
         prev_eval_section: str,
         eval_output_path: str = "",
+        section_names: list[str] | None = None,
     ) -> str:
         """Run one evaluator agent. Returns evaluation text."""
         os.makedirs(screenshots_dir, exist_ok=True)
@@ -734,16 +812,29 @@ class Orchestrator:
                 f"Also include the full evaluation in your text response."
             )
 
+        # Scope restriction: prevent evaluators from testing outside their sections
+        scope_block = ""
+        if section_names:
+            names_list = "\n".join(f"  - {n}" for n in section_names)
+            scope_block = (
+                f"\n\nSCOPE RESTRICTION — You are ONLY responsible for these sections:\n"
+                f"{names_list}\n\n"
+                f"Do NOT write checkbox results for criteria outside these sections. "
+                f"Other evaluators are testing those sections simultaneously. "
+                f"Duplicate or contradictory results for the same criterion break the evaluation."
+            )
+
         if is_lead:
             prompt = (
                 f"Evaluate this SUBSET of the application (you are evaluator {evaluator_id}, "
                 f"the LEAD evaluator responsible for Quality Assessment).\n\n"
                 f"Your criteria:\n{criteria_text}\n\n"
                 f"Product spec (for design quality assessment):\n{self.spec}\n\n"
-                f"Test each criterion. Take screenshots to {screenshots_dir}/.\n"
+                f"Test each criterion in your assigned sections. Take screenshots to {screenshots_dir}/.\n"
                 f"Write BOTH Feature Testing checkboxes AND the full Quality Assessment "
                 f"(Frontend + Backend tables, Evidence, Evidence Audit, Verdict, Required Changes).\n"
                 f"Navigate to {CONFIG['dev_server_url']}."
+                f"{scope_block}"
                 f"{write_instruction}"
                 f"{prev_eval_section}"
             )
@@ -752,10 +843,17 @@ class Orchestrator:
                 f"Evaluate this SUBSET of the application (you are evaluator {evaluator_id}).\n\n"
                 f"Your criteria:\n{criteria_text}\n\n"
                 f"Product spec (for context):\n{self.spec}\n\n"
-                f"Test each criterion. Take screenshots to {screenshots_dir}/.\n"
-                f"Write Feature Testing checkboxes ONLY (no Quality Assessment — "
-                f"another evaluator handles that).\n"
+                f"Test each criterion in your assigned sections. Take screenshots to {screenshots_dir}/.\n"
+                f"Write Feature Testing checkboxes ONLY for your assigned sections.\n"
+                f"DO NOT write any of these — the lead evaluator handles them:\n"
+                f"- Quality Assessment tables (Frontend/Backend)\n"
+                f"- Evidence section\n"
+                f"- Evidence Audit\n"
+                f"- Verdict (PASS/FAIL)\n"
+                f"- Required Changes\n\n"
+                f"If you find issues, mark them as FAIL checkboxes with explanation.\n"
                 f"Navigate to {CONFIG['dev_server_url']}."
+                f"{scope_block}"
                 f"{write_instruction}"
                 f"{prev_eval_section}"
             )
@@ -858,6 +956,11 @@ class Orchestrator:
         try:
             # Launch evaluators with staggered start (10s between each)
             # to avoid API rate limit spikes from simultaneous requests
+            # Build section name lists per evaluator for scope restriction
+            bucket_section_names = [
+                [s.header for s in bucket] for bucket in buckets
+            ]
+
             async def _staggered_eval(i, delay):
                 if delay > 0:
                     await asyncio.sleep(delay)
@@ -870,6 +973,7 @@ class Orchestrator:
                     screenshots_dir=screenshots_dir,
                     prev_eval_section=prev_eval_section,
                     eval_output_path=eval_output,
+                    section_names=bucket_section_names[i],
                 )
 
             tasks = [_staggered_eval(i, i * 10) for i in range(n_evaluators)]
@@ -943,6 +1047,18 @@ class Orchestrator:
                     eval_texts.append(result)
                     elapsed_i = int(time.time() - start)
                     _log("Evaluator", f"{label} — Evaluator {i} complete ({elapsed_i}s)")
+
+            # Detect leniency disparity between evaluators
+            per_eval_rates = []
+            for i, text in enumerate(eval_texts):
+                p, t = _parse_eval_score(text)
+                if t > 0:
+                    per_eval_rates.append((i, int(p / t * 100)))
+            if len(per_eval_rates) > 1:
+                rates = [r[1] for r in per_eval_rates]
+                if max(rates) - min(rates) > 25:
+                    rate_str = ", ".join(f"eval-{r[0]}: {r[1]}%" for r in per_eval_rates)
+                    _log("Evaluator", f"{label} — ⚠ LENIENCY DISPARITY: {rate_str}")
 
             # Merge all results
             best_eval = merge_evaluations(eval_texts, lead_index=0)
