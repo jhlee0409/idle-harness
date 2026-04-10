@@ -36,12 +36,12 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 ### Agent Flow (simple mode — default, per article's Opus 4.6 recommendation)
 
 1. **Planner** reads `agents/frontend-design-skill.md` then generates `comms/spec.md`
-2. **Evaluator** generates `comms/testable_criteria.md` — 50-100 concrete, interaction-level test criteria from the spec (warns if >100)
+2. **Evaluator** generates `comms/testable_criteria.md` — concrete, interaction-level test criteria from the spec
 3. **Generator reviews criteria** (`_review_criteria()`) — reads and acknowledges criteria before building, starts continuous session
 4. **Generator** builds entire app in `output/{slug}/` with TOOLS_FULL, using criteria as checklist
 5. **Smoke test** — HTTP health check before expensive eval. If app crashes, skip eval and feed error directly to Generator
-6. **Evaluator** tests running app via Playwright MCP. **Parallel evaluation**: criteria split by `###` section into N evaluator agents running concurrently via `asyncio.gather()`. Lead evaluator handles Visual Design + Quality Assessment. Results merged into single evaluation.md. Falls back to single evaluator for small criteria sets. Receives previous evaluation for regression comparison (REGRESSION/FIXED/PERSISTENT labels)
-7. On FAIL: feedback → Generator retries. Adaptive max attempts (first eval >90% → limit to 3 more). Regression detection resets Generator session on >20pp score drop. Timeout/InfraError stops retries immediately.
+6. **Evaluator** tests running app via Playwright MCP. **Parallel evaluation**: criteria split by `###` section into 3 evaluator agents (1 Opus lead + 2 Sonnet feature) running concurrently via `asyncio.gather()`. Lead handles Visual Design + Quality Assessment. Results merged into single evaluation.md with consolidated Required Changes. Falls back to single evaluator for small criteria sets. Receives previous evaluation for regression comparison (REGRESSION/FIXED/PERSISTENT labels). Empty response (0 criteria) triggers auto-retry.
+7. On FAIL: feedback (with score trajectory) → Generator retries. Regression detection resets Generator session on >20pp score drop. Consecutive crashes trigger cooldown (60s exponential backoff). Timeout/InfraError stops retries immediately.
 8. If backend passes but frontend design fails → **design refinement loop** (up to 10 iterations)
 9. `comms/` artifacts archived to `output/{slug}/.harness/`
 
@@ -69,17 +69,22 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 - **Smoke test** — Post-build HTTP health check (`_smoke_test()`) before expensive Evaluator. Catches app crashes in 5 seconds vs 30+ minutes. Failure is written to evaluation.md as direct feedback.
 - **Regression detection** — `_check_regression()` tracks eval scores in state.json. Resets Generator session on >20pp score drop from best, or three consecutive drops. Prevents context saturation.
 - **No attempt limiting** — Every build-eval cycle runs to completion. Optimizes for first-time PASS, not per-run cost savings. Re-running is always more expensive than extra attempts.
+- **Score trajectory in feedback** — Generator receives eval score history ("30% → 40% ↑ 10pp") to inform REFINE/PIVOT decisions with actual data.
+- **Parallel eval model tiering** — Lead evaluator (Quality Assessment) uses Opus, feature evaluators use Sonnet. Reduces API rate limit pressure while maintaining quality where it matters.
+- **Consolidated Required Changes** — After parallel merge, all evaluators' Required Changes are collected into one section. Generator sees one prioritized list, not N scattered lists.
+- **Crash cooldown** — After 3+ consecutive `AgentError`/`RuntimeError`, exponential backoff (60s, 120s, 240s, cap 300s) before retry. Prevents burning attempts against a temporary infrastructure issue.
+- **Playwright cleanup** — `_cleanup_playwright()` kills zombie Chromium/Playwright processes after each parallel eval to prevent resource accumulation.
 - **Criteria review** — `_review_criteria()` in simple mode: Generator reads and acknowledges criteria before building, starting continuous session with criteria context.
 - **Generator writes self_eval.md** — Mandatory self-evaluation with actual verification (curl output, build results). Orchestrator logs discrepancy if self-eval claims >95% but last Evaluator scored <80%.
 - **Automation-limited feedback loop** — Items the evaluator couldn't test are extracted and passed back to the generator on retry with explicit self-test instructions.
-- **Criteria generation has minimum bound** — If evaluator produces <10 criteria, harness raises RuntimeError. No upper cap — count depends on app complexity.
+- **Criteria generation has minimum bound** — If evaluator produces <10 criteria, harness raises RuntimeError. No upper cap or artificial limits — count depends on app complexity.
 - **Evaluator gets spec in simple mode** — Product spec (with Visual Design Language) is passed inline alongside testable criteria so evaluator can assess design quality against the original design direction.
 - **Contract is cached in memory** — `_cached_contracts` dict initialized in `__init__`, caches contract text on first read to prevent generator from modifying criteria between retries (GAN integrity).
 - **Design refinement includes contract** — Generator receives testable criteria during design refinement so it knows which specific frontend criteria the Evaluator will re-test.
 
 ### File Roles
 
-- `orchestrator.py` — Orchestration + CLI + preflight + logging (~1000 lines, intentionally single file)
+- `orchestrator.py` — Orchestration + CLI + preflight + logging + parallel eval (single file)
 - `cli.py` — `call_agent()` wrapper around `claude_agent_sdk.query()`. Returns `AgentResult` with session_id, tokens, cost. Exports `fmt_tokens()` and `fmt_elapsed()` shared formatters.
 - `config.py` — `CONFIG` dict, tool lists (`TOOLS_READ_WRITE`, `TOOLS_FULL`, `TOOLS_EVALUATOR`), `CONTRACT_AGREED` constant
 - `state.py` — `HarnessState` persists to `comms/status.json`. Per-sprint attempt counters, per-phase cost tracking, sprint results, eval score history (`add_eval_score`, `get_eval_scores`, `get_last_eval_score`).
