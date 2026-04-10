@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 
 
 class HarnessState:
@@ -7,9 +8,8 @@ class HarnessState:
         self.path = os.path.join(comms_dir, "status.json")
         self.comms_dir = comms_dir
 
-    def init(self):
-        os.makedirs(self.comms_dir, exist_ok=True)
-        data = {
+    def _default_data(self) -> dict:
+        return {
             "phase": "planning",
             "current_sprint": 0,
             "total_sprints": 0,
@@ -17,15 +17,36 @@ class HarnessState:
             "cost": {"input_tokens": 0, "output_tokens": 0},
             "timings": {"plan": 0, "sprints": []},
         }
-        self._save(data)
+
+    def init(self):
+        os.makedirs(self.comms_dir, exist_ok=True)
+        self._save(self._default_data())
 
     def load(self) -> dict:
-        with open(self.path, "r") as f:
-            return json.load(f)
+        try:
+            with open(self.path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            # Corrupted or missing — re-initialize
+            data = self._default_data()
+            self._save(data)
+            return data
 
     def _save(self, data: dict):
-        with open(self.path, "w") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        # Atomic write: write to temp file then rename (prevents corruption on crash)
+        dir_name = os.path.dirname(self.path)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, self.path)  # atomic on POSIX
+        except Exception:
+            # Clean up temp file if rename failed
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def set_phase(self, phase: str):
         data = self.load()

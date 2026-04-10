@@ -130,8 +130,9 @@ async def call_agent(
         sys.stdout.flush()
 
     async def _ticker():
+        interval = 10 if status_label else 1  # less frequent in parallel mode
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(interval)
             _print_status()
 
     ticker_task = asyncio.create_task(_ticker())

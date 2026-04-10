@@ -415,7 +415,13 @@ class Orchestrator:
 
     def _init_output(self):
         slug = _slug_from_spec(self.spec)
-        self.output_dir = os.path.join(self.output_base, slug)
+        base = os.path.join(self.output_base, slug)
+        # Avoid collision with existing output from previous runs
+        self.output_dir = base
+        n = 2
+        while os.path.isdir(self.output_dir) and os.listdir(self.output_dir):
+            self.output_dir = f"{base}-{n}"
+            n += 1
         os.makedirs(self.output_dir, exist_ok=True)
         subprocess.run(
             ["git", "init"], cwd=self.output_dir, capture_output=True
@@ -439,10 +445,17 @@ class Orchestrator:
         sprints_dir = os.path.join(self.comms_dir, "sprints")
         if os.path.isdir(sprints_dir):
             shutil.rmtree(sprints_dir)
-        for stale in ("spec.md", "dev_server.json", "integration_evaluation.md"):
+        for stale in ("spec.md", "dev_server.json", "integration_evaluation.md",
+                      "testable_criteria.md", "criteria_response.md"):
             path = os.path.join(self.comms_dir, stale)
             if os.path.exists(path):
                 os.remove(path)
+        # Clean up integration eval attempt files
+        import glob
+        for f in glob.glob(os.path.join(self.comms_dir, "integration_evaluation_attempt_*.md")):
+            os.remove(f)
+        for f in glob.glob(os.path.join(self.comms_dir, "integration_fix_*.md")):
+            os.remove(f)
         self._created_dirs.clear()
         self.state.init()
 
@@ -812,7 +825,7 @@ class Orchestrator:
                 f"Also include the full evaluation in your text response."
             )
 
-        # Scope restriction: prevent evaluators from testing outside their sections
+        # Scope restriction + data isolation for parallel evaluators
         scope_block = ""
         if section_names:
             names_list = "\n".join(f"  - {n}" for n in section_names)
@@ -821,7 +834,12 @@ class Orchestrator:
                 f"{names_list}\n\n"
                 f"Do NOT write checkbox results for criteria outside these sections. "
                 f"Other evaluators are testing those sections simultaneously. "
-                f"Duplicate or contradictory results for the same criterion break the evaluation."
+                f"Duplicate or contradictory results for the same criterion break the evaluation.\n\n"
+                f"DATA ISOLATION — Other evaluators are testing the same app concurrently.\n"
+                f"Prefix ALL test data you create with 'eval{evaluator_id}-' to avoid conflicts.\n"
+                f"Examples: user 'eval{evaluator_id}-testuser@test.com', "
+                f"recipe 'eval{evaluator_id}-Test Recipe', board 'eval{evaluator_id}-Test Board'.\n"
+                f"Do NOT delete data that doesn't have your prefix — it belongs to another evaluator."
             )
 
         if is_lead:

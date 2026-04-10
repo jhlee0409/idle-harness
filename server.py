@@ -61,6 +61,10 @@ class DevServer:
         ))
 
     def start(self):
+        # Clean up any leftover processes from previous start
+        if self.processes:
+            self.stop()
+
         if not self.start_cmd:
             self.detect()
         if not self.start_cmd:
@@ -130,7 +134,12 @@ class DevServer:
                 )
 
         self._spawn("python3 -m uvicorn main:app --reload --port 8006", backend_dir)
-        self._spawn("npm run dev -- --port 8005", frontend_dir)
+        try:
+            self._spawn("npm run dev -- --port 8005", frontend_dir)
+        except Exception:
+            # Frontend failed — clean up already-started backend
+            self.stop()
+            raise
 
     def stop(self):
         for proc in self.processes:
