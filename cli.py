@@ -67,6 +67,7 @@ async def call_agent(
     disallowed_tools: list[str] | None = None,
     timeout: int = 0,
     model: str | None = None,
+    status_label: str = "",
 ) -> AgentResult:
     """Call a Claude agent. Pass resume=session_id to continue a previous session.
 
@@ -117,10 +118,15 @@ async def call_agent(
     def _print_status():
         elapsed = fmt_elapsed(int(time.time() - start))
         total_tok = fmt_tokens(input_tokens + output_tokens)
-        status = f"    ↳ {elapsed} | {turn_count} turns | {total_tok} tokens"
+        prefix = f"    ↳ [{status_label}] " if status_label else "    ↳ "
+        status = f"{prefix}{elapsed} | {turn_count} turns | {total_tok} tokens"
         if cost_usd > 0:
             status += f" | ${cost_usd:.2f}"
-        sys.stdout.write(f"\r{status}    ")
+        if status_label:
+            # Parallel mode: print on separate lines to avoid overwrite
+            sys.stdout.write(f"\r{status}    \n")
+        else:
+            sys.stdout.write(f"\r{status}    ")
         sys.stdout.flush()
 
     async def _ticker():

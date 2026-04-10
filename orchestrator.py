@@ -754,6 +754,7 @@ class Orchestrator:
                 f"{prev_eval_section}"
             )
 
+        label = f"eval-{evaluator_id}" + (" lead" if is_lead else "")
         result = await call_agent(
             system_prompt=self.evaluator_prompt,
             user_prompt=prompt,
@@ -762,6 +763,7 @@ class Orchestrator:
             cwd=self.root,
             timeout=CONFIG["agent_timeout_eval"],
             model=resolve_agent_model("evaluator"),
+            status_label=label,
         )
         self._track_cost(result, "eval")
 
