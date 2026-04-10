@@ -189,9 +189,37 @@ def merge_evaluations(
     total = passed + len(re.findall(r"^\s*- \[ \] ", combined, re.MULTILINE))
     pct = int(passed / total * 100) if total > 0 else 0
 
+    # Extract all Required Changes from every evaluator into one consolidated section
+    all_changes = []
+    for text in eval_texts:
+        if not text:
+            continue
+        in_changes = False
+        for line in text.split("\n"):
+            if re.match(r"^#{1,4}\s*Required Changes", line):
+                in_changes = True
+                continue
+            if in_changes:
+                # Stop at next heading
+                if re.match(r"^#{1,4}\s", line) and "Required" not in line:
+                    in_changes = False
+                    continue
+                stripped = line.strip()
+                if stripped and stripped not in all_changes:
+                    all_changes.append(stripped)
+
+    changes_section = ""
+    if all_changes:
+        changes_section = (
+            "\n\n### Required Changes (consolidated from all evaluators)\n"
+            + "\n".join(all_changes)
+            + "\n"
+        )
+
     merged = "## Application Evaluation (Parallel)\n\n"
     merged += f"### Feature Pass Rate: {passed}/{total} ({pct}%)\n\n"
     merged += combined
+    merged += changes_section
 
     return merged
 
@@ -531,12 +559,30 @@ class Orchestrator:
                     f"If any of these are broken, the next evaluation will fail again."
                 )
 
+            # Score trajectory from eval history (file-based, not harness injection)
+            score_trajectory = ""
+            scores = self.state.get_eval_scores(sprint.number)
+            if scores:
+                valid = [s for s in scores if s.get("total", 0) > 0]
+                if valid:
+                    trajectory = " → ".join(f"{s['pct']}%" for s in valid)
+                    latest = valid[-1]
+                    direction = ""
+                    if len(valid) >= 2:
+                        diff = latest["pct"] - valid[-2]["pct"]
+                        direction = f" ({'↑' if diff > 0 else '↓'} {abs(diff)}pp from last)"
+                    score_trajectory = (
+                        f"\n\nEval score trajectory: {trajectory}{direction}\n"
+                        f"Latest: {latest['passed']}/{latest['total']} ({latest['pct']}%)"
+                    )
+
             eval_context = (
                 f"\n\nPrevious evaluation feedback:\n{eval_context}\n\n"
-                f"Make a strategic decision before coding:\n"
-                f"**REFINE** if most criteria passed and failures are specific, fixable issues. "
-                f"**PIVOT** if the evaluator described fundamental problems (generic design, "
-                f"multiple simultaneous failures, or no improvement from previous attempt). "
+                f"{score_trajectory}\n\n"
+                f"Make a strategic decision based on the score trajectory:\n"
+                f"**REFINE** if score is improving and failures are specific, fixable issues.\n"
+                f"**PIVOT** if score is stagnant or declining, or the evaluator described "
+                f"fundamental problems (generic design, multiple simultaneous failures).\n"
                 f"State your decision explicitly: 'STRATEGY: REFINE — [reason]' or "
                 f"'STRATEGY: PIVOT — [reason]'."
                 f"{limited_section}"
@@ -1257,8 +1303,11 @@ class Orchestrator:
                             f"The application failed a basic health check before full evaluation.\n\n"
                             f"**Error:** {smoke_msg}\n\n"
                             f"### Verdict: FAIL\n\n"
-                            f"Fix the app crash before addressing individual criteria. "
-                            f"The Evaluator cannot test a broken app.\n"
+                            f"### Required Changes\n"
+                            f"1. Fix the app crash so it loads at {CONFIG['dev_server_url']}. "
+                            f"Error details: {smoke_msg}\n"
+                            f"2. After fixing, verify both servers start and the main page loads "
+                            f"before handing off to evaluation.\n"
                         )
                     passed = False
                     consecutive_crashes = 0
@@ -1484,7 +1533,7 @@ class Orchestrator:
                 fix_start = time.time()
                 fix_prompt = (
                     f"Integration evaluation FAILED. Fix the issues below.\n\n"
-                    f"Evaluation feedback:\n{eval_result.result}\n\n"
+                    f"Evaluation feedback:\n{best_eval}\n\n"
                     f"Product spec: Read from {self.spec_path}\n\n"
                     f"Fix ALL Required Changes listed in the evaluation. "
                     f"Self-verify: build must succeed, app must run. "
