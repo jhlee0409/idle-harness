@@ -807,16 +807,7 @@ class Orchestrator:
                          f"Generator may not be honestly self-testing.")
 
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
-        """Dispatch to parallel or single evaluation based on criteria structure."""
-        if contract_path not in self._cached_contracts:
-            self._cached_contracts[contract_path] = _read_file(contract_path)
-        contract = self._cached_contracts[contract_path]
-
-        sections = parse_criteria_sections(contract)
-        buckets = assign_sections_to_evaluators(sections)
-
-        if len(buckets) > 1:
-            return await self._evaluate_parallel(sprint, contract_path, buckets)
+        """Run single evaluator. Parallel eval disabled — not production-ready."""
         return await self._evaluate_single(sprint, contract_path)
 
     async def _run_single_evaluator(
