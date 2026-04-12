@@ -2813,6 +2813,14 @@ def _cmd_serve():
         print(f"{_C.RED}Output directory not found: {output_dir}{_C.RESET}")
         sys.exit(1)
 
+    # Check .harness/dev_server.json if comms/ doesn't have it (archived build)
+    harness_dir = os.path.join(output_dir, ".harness")
+    if not os.path.exists(os.path.join(comms_dir, "dev_server.json")):
+        harness_json = os.path.join(harness_dir, "dev_server.json")
+        if os.path.exists(harness_json):
+            import shutil
+            shutil.copy(harness_json, os.path.join(comms_dir, "dev_server.json"))
+
     server = _make_server(comms_dir, output_dir)
     print(f"{_C.BOLD}Starting {slug}...{_C.RESET}")
     try:
