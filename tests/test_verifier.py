@@ -1,4 +1,3 @@
-import json
 import os
 import tempfile
 
@@ -12,88 +11,49 @@ from verifier import (
 )
 
 
-def _mock_agent_result(text):
-    """Create a mock AgentResult."""
-    m = MagicMock()
-    m.result = text
-    m.input_tokens = 0
-    m.output_tokens = 0
-    m.turns = 1
-    m.session_id = ""
-    m.cost_usd = 0.01
-    m.duration_ms = 100
-    return m
+# --- classify_criteria tests (deterministic regex-based) ---
+
+def test_classify_criteria_api():
+    criteria = "- [x] GET /api/recipes returns valid JSON with status 200"
+    checks = classify_criteria(criteria)
+    assert len(checks) == 1
+    assert checks[0].check_type == CheckType.API
+    assert checks[0].details["method"] == "GET"
+    assert checks[0].details["path"] == "/api/recipes"
 
 
-SAMPLE_CLASSIFY_RESPONSE = json.dumps([
-    {"criterion": "API returns 200", "type": "api", "details": {"method": "GET", "path": "/api/recipes", "expect_status": 200}},
-    {"criterion": "Background is #0F0F0F", "type": "css", "details": {"selector": "html", "property": "background-color", "expected": "#0F0F0F"}},
-    {"criterion": "Design feels cohesive", "type": "subjective", "details": {}},
-])
+def test_classify_criteria_css():
+    """Criteria without API/build/responsive patterns default to subjective
+    (CSS requires Playwright, so it's deferred to Evaluator)."""
+    criteria = "- [x] Background color is #0F0F0F"
+    checks = classify_criteria(criteria)
+    assert len(checks) == 1
+    assert checks[0].check_type == CheckType.SUBJECTIVE
 
 
-# --- classify_criteria tests ---
-
-@pytest.mark.anyio
-async def test_classify_criteria_api():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        mock = AsyncMock(return_value=_mock_agent_result(SAMPLE_CLASSIFY_RESPONSE))
-        with patch("verifier.call_agent", mock), \
-             patch("verifier._classification_cache", {}):
-            criteria = "- [x] API returns 200\n- [x] Background is #0F0F0F\n- [x] Design feels cohesive"
-            checks = await classify_criteria(criteria, tmpdir)
-            assert len(checks) == 3
-            assert checks[0].check_type == CheckType.API
-            assert checks[0].details["path"] == "/api/recipes"
+def test_classify_criteria_subjective():
+    criteria = "- [x] Design feels cohesive and editorial"
+    checks = classify_criteria(criteria)
+    assert len(checks) == 1
+    assert checks[0].check_type == CheckType.SUBJECTIVE
 
 
-@pytest.mark.anyio
-async def test_classify_criteria_css():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        mock = AsyncMock(return_value=_mock_agent_result(SAMPLE_CLASSIFY_RESPONSE))
-        with patch("verifier.call_agent", mock), \
-             patch("verifier._classification_cache", {}):
-            criteria = "- [x] API returns 200\n- [x] Background is #0F0F0F\n- [x] Design feels cohesive"
-            checks = await classify_criteria(criteria, tmpdir)
-            assert checks[1].check_type == CheckType.CSS
+def test_classify_criteria_fallback_on_error():
+    """Criteria with no matching patterns default to subjective."""
+    criteria = "- [x] Button click opens a modal with a form"
+    checks = classify_criteria(criteria)
+    assert len(checks) == 1
+    assert checks[0].check_type == CheckType.SUBJECTIVE
 
 
-@pytest.mark.anyio
-async def test_classify_criteria_subjective():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        mock = AsyncMock(return_value=_mock_agent_result(SAMPLE_CLASSIFY_RESPONSE))
-        with patch("verifier.call_agent", mock), \
-             patch("verifier._classification_cache", {}):
-            criteria = "- [x] API returns 200\n- [x] Background is #0F0F0F\n- [x] Design feels cohesive"
-            checks = await classify_criteria(criteria, tmpdir)
-            assert checks[2].check_type == CheckType.SUBJECTIVE
-
-
-@pytest.mark.anyio
-async def test_classify_criteria_fallback_on_error():
-    """Unclassifiable criteria should fallback to subjective."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        from cli import AgentError
-        mock = AsyncMock(side_effect=AgentError("LLM failed"))
-        with patch("verifier.call_agent", mock), \
-             patch("verifier._classification_cache", {}):
-            criteria = "- [x] Something complex"
-            checks = await classify_criteria(criteria, tmpdir)
-            assert len(checks) == 1
-            assert checks[0].check_type == CheckType.SUBJECTIVE
-
-
-@pytest.mark.anyio
-async def test_classify_criteria_cached():
-    """Same criteria text should not re-call LLM."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        mock = AsyncMock(return_value=_mock_agent_result(SAMPLE_CLASSIFY_RESPONSE))
-        with patch("verifier.call_agent", mock), \
-             patch("verifier._classification_cache", {}):
-            criteria = "- [x] API returns 200\n- [x] Background is #0F0F0F\n- [x] Design feels cohesive"
-            await classify_criteria(criteria, tmpdir)
-            await classify_criteria(criteria, tmpdir)  # second call
-            assert mock.call_count == 1  # only called once
+def test_classify_criteria_cached():
+    """Deterministic classifier always returns same result — no caching needed."""
+    criteria = "- [x] GET /api/tasks returns JSON\n- [x] Design is original"
+    checks1 = classify_criteria(criteria)
+    checks2 = classify_criteria(criteria)
+    assert len(checks1) == len(checks2)
+    assert checks1[0].check_type == checks2[0].check_type
+    assert checks1[1].check_type == checks2[1].check_type
 
 
 # --- verify_api tests ---

@@ -70,8 +70,19 @@ def _count_criteria(text: str) -> int:
 def _parse_eval_score(text: str) -> tuple[int, int]:
     """Parse pass/fail counts from evaluation text.
 
+    Prefers the Evaluator's explicit "Feature Pass Rate: X/Y" line when present,
+    since checkbox counting can include extra summary sections the Evaluator adds
+    beyond the original criteria (e.g. "Full-Stack Verification").
+    Falls back to counting checkboxes if no explicit rate is found.
     Returns (passed_count, total_count). Returns (0, 0) if unparseable.
     """
+    # Prefer Evaluator's own declared count
+    rate_match = re.search(
+        r"Feature Pass Rate:\s*(\d+)\s*/\s*(\d+)", text, re.IGNORECASE
+    )
+    if rate_match:
+        return int(rate_match.group(1)), int(rate_match.group(2))
+    # Fallback: count checkboxes
     passed = len(re.findall(r"^\s*- \[x\] ", text, re.MULTILINE))
     failed = len(re.findall(r"^\s*- \[ \] ", text, re.MULTILINE))
     total = passed + failed
@@ -346,6 +357,56 @@ def _slug_from_spec(spec: str) -> str:
     return "app"
 
 
+def _extract_design_history(output_base: str) -> str:
+    """Extract design directions from previous builds' specs.
+
+    Reads the Visual Design Language section from each output/{slug}/.harness/spec.md
+    and returns a summary of what's been tried before, so the Planner can choose
+    something different.
+    """
+    history = []
+    if not os.path.isdir(output_base):
+        return ""
+
+    for slug in sorted(os.listdir(output_base)):
+        spec_path = os.path.join(output_base, slug, ".harness", "spec.md")
+        if not os.path.isfile(spec_path):
+            continue
+        try:
+            spec = _read_file(spec_path)
+        except (FileNotFoundError, OSError):
+            continue
+
+        # Extract Aesthetic Direction line
+        direction_match = re.search(
+            r"###?\s*Aesthetic Direction\s*\n\*?\*?(.+?)(?:\*?\*?)(?:\n|$)",
+            spec, re.IGNORECASE
+        )
+        # Extract Color Palette — just the mode (dark/light) and dominant color
+        mode = "dark" if re.search(r"dark\s*mode|dark\s*theme", spec, re.IGNORECASE) else "light"
+        # Extract display font (handles: "DM Serif Display", `Poiret One`, Fraunces)
+        font_match = re.search(
+            r'[Dd]isplay\s*[Ff]ont[^:]*:\s*["`\']?([A-Z][A-Za-z\s]+)',
+            spec
+        )
+        font = font_match.group(1).strip().rstrip('"\'`') if font_match else "unknown"
+
+        direction = direction_match.group(1).strip()[:80] if direction_match else "unknown"
+
+        history.append(f"- {slug}: {direction} | {mode} mode | font: {font}")
+
+    if not history:
+        return ""
+
+    return (
+        "\n\n## DESIGN HISTORY — What has already been built\n"
+        "These design directions were used in previous runs. "
+        "You MUST choose a DIFFERENT direction. Do not repeat the same aesthetic, "
+        "mode (dark/light), or display font.\n\n"
+        + "\n".join(history)
+    )
+
+
 def _make_server(comms_dir: str, output_dir: str) -> DevServer:
     return DevServer(
         comms_dir=comms_dir,
@@ -421,10 +482,9 @@ class Orchestrator:
         return self._evaluator_prompt
 
     def _track_cost(self, agent_result, label: str = ""):
-        self.state.add_cost(agent_result.input_tokens, agent_result.output_tokens, label)
         cost_usd = getattr(agent_result, "cost_usd", 0) or 0
         if cost_usd > 0:
-            self.state.add_cost_usd(cost_usd)
+            self.state.add_cost_usd(cost_usd, label)
 
     def _init_output(self):
         slug = _slug_from_spec(self.spec)
@@ -476,9 +536,14 @@ class Orchestrator:
         _log("Planner", "Generating spec...")
         start = time.time()
         design_skill_path = os.path.join(self.agents_dir, "frontend-design-skill.md")
+
+        # Inject design history to prevent convergence
+        design_history = _extract_design_history(self.output_base)
+
         prompt = (
             f"User request: {user_prompt}\n\n"
             f"First, read the frontend design skill at {design_skill_path} for visual design guidance.\n\n"
+            f"{design_history}\n\n"
             f"Then generate a complete product specification. "
             f"Write the spec to {self.spec_path} using the Write tool."
         )
@@ -523,6 +588,8 @@ class Orchestrator:
             f"Product spec:\n{self.spec}\n\n"
             f"Use the Criteria Generation Mode described in your instructions.\n"
             f"Cover EVERY feature (P0, P1, P2) with 5-15 criteria each.\n"
+            f"Target 60-100 total criteria. More than 100 increases eval cost significantly.\n"
+            f"Focus on testable behavior, not polish details that are hard to verify via automation.\n"
             f"Ignore the '## Sprints' section — generate criteria for ALL features as one unit.\n\n"
             f"Write the criteria to {criteria_path} using the Write tool."
         )
@@ -550,8 +617,10 @@ class Orchestrator:
                 f"Criteria generation produced only {criteria_count} criteria (minimum 10 required). "
                 f"The Evaluator may have failed to parse the spec correctly."
             )
+        if criteria_count > 100:
+            _log("Harness", f"⚠ {criteria_count} criteria generated (recommended max: 100). "
+                 f"Higher count increases eval cost and makes 100% PASS harder to achieve.")
         _log("Harness", f"Criteria count: {criteria_count}")
-        elapsed_s = int(time.time() - start)
         _log("Evaluator", f"Generated {criteria_count} testable criteria. ({_fmt_stats(agent_result, start)})")
         # Save criteria generation response for analysis
         _save_agent_response(self.comms_dir, "criteria_response.md", agent_result.result)
@@ -685,15 +754,35 @@ class Orchestrator:
                         f"Latest: {latest['passed']}/{latest['total']} ({latest['pct']}%)"
                     )
 
+            # Check if previous self-eval was unreliable
+            discrepancy_section = ""
+            last_eval = self.state.get_last_eval_score(sprint.number)
+            self_eval_path = os.path.join(self._sprint_dir(sprint), "self_eval.md")
+            prev_self_eval = _read_file_optional(self_eval_path)
+            if prev_self_eval and last_eval and last_eval.get("total", 0) > 0:
+                verified = len(re.findall(r"^\s*- \[x\] ", prev_self_eval, re.MULTILINE))
+                total_se = _count_criteria(prev_self_eval)
+                if total_se > 0:
+                    self_pct = int(verified / total_se * 100)
+                    gap = self_pct - last_eval["pct"]
+                    if gap > 10:
+                        discrepancy_section = (
+                            f"\n\n⚠ YOUR SELF-EVAL WAS INACCURATE: you reported {self_pct}% "
+                            f"verified, Evaluator found {last_eval['pct']}% (gap: {gap}pp). "
+                            f"Your [x] verified items include things the Evaluator proved broken. "
+                            f"For this attempt: only mark [x] for criteria you tested with "
+                            f"curl output or build results. Use [?] for everything else."
+                        )
+
             eval_context = (
                 f"\n\nPrevious evaluation feedback:\n{eval_context}\n\n"
-                f"{score_trajectory}\n\n"
-                f"Make a strategic decision based on the score trajectory:\n"
+                f"{score_trajectory}"
+                f"{discrepancy_section}\n\n"
+                f"MANDATORY FIRST LINE of your response must be your strategic decision:\n"
+                f"'STRATEGY: REFINE — [reason]' or 'STRATEGY: PIVOT — [reason]'\n\n"
                 f"**REFINE** if score is improving and failures are specific, fixable issues.\n"
                 f"**PIVOT** if score is stagnant or declining, or the evaluator described "
-                f"fundamental problems (generic design, multiple simultaneous failures).\n"
-                f"State your decision explicitly: 'STRATEGY: REFINE — [reason]' or "
-                f"'STRATEGY: PIVOT — [reason]'."
+                f"fundamental problems (generic design, multiple simultaneous failures)."
                 f"{limited_section}"
             )
 
@@ -720,8 +809,9 @@ class Orchestrator:
                 f"EACH ONE individually by interacting with the running app. A feature that exists "
                 f"in the UI but doesn't work when interacted with will FAIL.\n\n"
                 f"FIRST BUILD QUALITY IS CRITICAL. Each evaluation cycle costs $10-20 and 30+ "
-                f"minutes. A thorough first build that takes 1-2 hours but covers 90%+ of criteria "
-                f"is far cheaper than a rushed 20-minute build that triggers 5+ eval-fix cycles. "
+                f"minutes. PASS requires 100% of criteria — even 1 failure means another full "
+                f"eval cycle. A thorough first build that covers ALL criteria is far cheaper "
+                f"than a rushed build that triggers 5+ eval-fix cycles. "
                 f"Do NOT stop after implementing the basic structure.\n\n"
                 f"Work in the current directory. Self-verify: build must succeed, app must run. "
                 f"Commit your changes with git.\n\n"
@@ -731,10 +821,14 @@ class Orchestrator:
                 f"2. Run `curl` against EVERY API endpoint — paste the actual output\n"
                 f"3. Open {CONFIG['dev_server_url']} in the browser and verify the page loads\n"
                 f"4. Write your self-evaluation to: {self._sprint_dir(sprint)}/self_eval.md\n"
-                f"   Format: '- [x] criterion' or '- [ ] criterion — reason (NOT IMPLEMENTED)'\n"
-                f"   Be honest. Claiming 100% when features are incomplete wastes an entire "
-                f"   eval cycle ($15+). Mark criteria you did NOT verify as '- [ ]'.\n"
-                f"   'Self-eval pass rate: X/Y (Z%)'. If <90%, keep building."
+                f"   Use THREE markers to distinguish what you actually verified:\n"
+                f"   '- [x] criterion' — VERIFIED: you ran curl/build and confirmed it works\n"
+                f"   '- [?] criterion' — UNVERIFIED: implemented but you cannot test it "
+                f"(animations, skeleton states, hover effects, responsive layout, Playwright-only)\n"
+                f"   '- [ ] criterion — reason' — NOT IMPLEMENTED\n"
+                f"   Count only [x] as verified. '- [?]' is NOT a pass — the Evaluator will test these.\n"
+                f"   'Self-eval: X verified, Y unverified, Z not implemented out of N total'.\n"
+                f"   If verified + unverified < 90% of total, keep building."
             )
         else:
             prompt = (
@@ -785,26 +879,46 @@ class Orchestrator:
             agent_result.result,
         )
 
-        # Log Generator self-eval and cross-reference with last Evaluator score
+        # Log Generator self-eval with verified/unverified/not-implemented breakdown
         self_eval_path = os.path.join(self._sprint_dir(sprint), "self_eval.md")
         self_eval_text = _read_file_optional(self_eval_path)
         if self_eval_text:
-            rate_match = re.search(r"pass rate:\s*(\d+)/(\d+)", self_eval_text, re.IGNORECASE)
-            if rate_match:
-                passed_count = int(rate_match.group(1))
-                total_count = int(rate_match.group(2))
-                pct = int(passed_count / total_count * 100) if total_count > 0 else 0
-                _log("Generator", f"Self-eval: {passed_count}/{total_count} ({pct}%) criteria satisfied.")
-                if pct < 90:
-                    _log("Harness", f"Self-eval below 90% ({pct}%). Generator should have continued building.")
+            verified = len(re.findall(r"^\s*- \[x\] ", self_eval_text, re.MULTILINE))
+            unverified = len(re.findall(r"^\s*- \[\?\] ", self_eval_text, re.MULTILINE))
+            not_impl = len(re.findall(r"^\s*- \[ \] ", self_eval_text, re.MULTILINE))
+            total_count = verified + unverified + not_impl
 
-                # Honesty check: compare self-eval with last Evaluator score
+            if total_count > 0:
+                _log("Generator", f"Self-eval: {verified} verified, {unverified} unverified, "
+                     f"{not_impl} not implemented ({total_count} total)")
+                if not_impl > 0:
+                    _log("Harness", f"Generator admits {not_impl} criteria not implemented.")
+
+                # Honesty check: compare verified count with Evaluator score
                 last_eval = self.state.get_last_eval_score(sprint.number)
-                if last_eval and pct > 95 and last_eval["pct"] < 80:
-                    _log("Harness",
-                         f"⚠ SELF-EVAL DISCREPANCY: Generator claims {pct}% but "
-                         f"last Evaluator scored {last_eval['pct']}%. "
-                         f"Generator may not be honestly self-testing.")
+                if last_eval and last_eval.get("total", 0) > 0:
+                    # Generator's "verified" should be close to Evaluator's pass count
+                    self_pct = int(verified / total_count * 100)
+                    gap = self_pct - last_eval["pct"]
+                    if gap > 10:
+                        _log("Harness",
+                             f"⚠ SELF-EVAL DISCREPANCY: Generator verified {self_pct}% but "
+                             f"last Evaluator scored {last_eval['pct']}% (gap: {gap}pp).")
+            else:
+                # Fallback: old format (pass rate: X/Y)
+                rate_match = re.search(r"pass rate:\s*(\d+)/(\d+)", self_eval_text, re.IGNORECASE)
+                if rate_match:
+                    passed_count = int(rate_match.group(1))
+                    total_count = int(rate_match.group(2))
+                    pct = int(passed_count / total_count * 100) if total_count > 0 else 0
+                    _log("Generator", f"Self-eval: {passed_count}/{total_count} ({pct}%)")
+                    last_eval = self.state.get_last_eval_score(sprint.number)
+                    if last_eval and last_eval.get("total", 0) > 0:
+                        gap = pct - last_eval["pct"]
+                        if gap > 10:
+                            _log("Harness",
+                                 f"⚠ SELF-EVAL DISCREPANCY: Generator claims {pct}% but "
+                                 f"last Evaluator scored {last_eval['pct']}% (gap: {gap}pp).")
 
     async def evaluate(self, sprint: Sprint, contract_path: str) -> bool:
         """Run single evaluator. Parallel eval disabled — not production-ready."""
@@ -896,31 +1010,42 @@ class Orchestrator:
         # Use whichever source has more criteria: text response or per-evaluator disk file
         best = self._pick_best_eval(result.result, eval_output_path)
 
-        # Validation: if both sources have 0 criteria, retry once
-        _, criteria_count = _parse_eval_score(best)
-        if criteria_count == 0:
-            _log("Evaluator", f"Evaluator {evaluator_id} returned 0 criteria. Retrying once...")
-            retry_result = await call_agent(
-                system_prompt=self.evaluator_prompt,
-                user_prompt=prompt,
-                allowed_tools=TOOLS_EVALUATOR,
-                mcp_servers=CONFIG.get("mcp_servers"),
-                cwd=self.root,
-                timeout=CONFIG["agent_timeout_eval"],
-                model=resolve_agent_model("evaluator"),
-            )
-            self._track_cost(retry_result, "eval")
-            best = self._pick_best_eval(retry_result.result, eval_output_path)
+        # Validation: if both sources have 0 checkboxes, retry once
+        if _count_criteria(best) == 0:
+            _log("Evaluator", f"Evaluator {evaluator_id} returned 0 checkboxes. Retrying once...")
+            try:
+                retry_result = await call_agent(
+                    system_prompt=self.evaluator_prompt,
+                    user_prompt=prompt,
+                    allowed_tools=TOOLS_EVALUATOR,
+                    mcp_servers=CONFIG.get("mcp_servers"),
+                    cwd=self.root,
+                    timeout=CONFIG["agent_timeout_eval"],
+                    model=resolve_agent_model("evaluator"),
+                )
+                self._track_cost(retry_result, "eval")
+                retry_eval = self._pick_best_eval(retry_result.result, eval_output_path)
+                if _count_criteria(retry_eval) > 0:
+                    best = retry_eval
+                else:
+                    _log("Evaluator", f"Evaluator {evaluator_id} retry also returned 0 checkboxes.")
+            except (AgentError, AgentTimeout):
+                _log("Evaluator", f"Evaluator {evaluator_id} retry failed.")
 
         return best
 
     @staticmethod
     def _pick_best_eval(agent_response: str, eval_output_path: str) -> str:
-        """Return whichever has more criteria: text response or disk file."""
+        """Return whichever has more per-criterion checkboxes.
+
+        Counts actual checkboxes (- [x] / - [ ]), NOT Feature Pass Rate lines.
+        A summary with "Feature Pass Rate: 98/115" but 0 checkboxes is useless
+        as Generator feedback — the Generator needs to know WHICH criteria failed.
+        """
         disk_eval = _read_file_optional(eval_output_path) if eval_output_path else ""
-        _, response_criteria = _parse_eval_score(agent_response)
-        _, disk_criteria = _parse_eval_score(disk_eval)
-        if disk_criteria > response_criteria:
+        response_boxes = _count_criteria(agent_response)
+        disk_boxes = _count_criteria(disk_eval)
+        if disk_boxes > response_boxes:
             return disk_eval
         return agent_response
 
@@ -1104,13 +1229,21 @@ class Orchestrator:
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "eval", elapsed)
 
-        passed = _check_verdict_pass(best_eval)
+        # PASS requires 100% criteria pass (same enforcement as _evaluate_single)
+        eval_passed, eval_total = _parse_eval_score(best_eval)
+        if eval_total > 0 and eval_passed < eval_total:
+            passed = False
+            failed_count = eval_total - eval_passed
+            _log("Evaluator", f"{label} — {failed_count}/{eval_total} criteria failed. "
+                 f"PASS requires 100%.")
+        else:
+            passed = _check_verdict_pass(best_eval)
 
         if passed:
             limited, total = _parse_automation_limited(best_eval)
             if total > 0 and limited / total > 0.10:
                 _log("Evaluator",
-                     f"{label} — Verdict was PASS but {limited}/{total} criteria "
+                     f"{label} — {limited}/{total} criteria "
                      f"({int(limited/total*100)}%) marked automation-limited. "
                      f"Overriding to FAIL.")
                 passed = False
@@ -1185,9 +1318,14 @@ class Orchestrator:
                     f"A criterion that cannot be verified through interaction is FAIL.\n"
                     f"Do NOT mark a criterion PASS based on DOM/CSS inspection alone — "
                     f"you must perform the described user action and observe the result.\n\n"
+                    f"PASS requires ALL criteria to pass. Even 1 failure = FAIL verdict. "
+                    f"Do NOT write Verdict: PASS if any criterion is marked FAIL.\n\n"
                     f"Navigate to {CONFIG['dev_server_url']}. "
-                    f"Take screenshots — save them to {screenshots_dir}/. "
-                    f"Write your evaluation as a response."
+                    f"Take screenshots — save them to {screenshots_dir}/.\n\n"
+                    f"IMPORTANT: Write your COMPLETE evaluation (all per-criterion checkboxes, "
+                    f"Quality Assessment tables, Evidence, Verdict, Required Changes) to this "
+                    f"file using the Write tool: {eval_path}\n"
+                    f"Also include the full evaluation in your text response."
                     f"{prev_eval_section}"
                 )
             else:
@@ -1196,8 +1334,10 @@ class Orchestrator:
                     f"Sprint contract (test against these criteria):\n{contract}\n\n"
                     f"Product spec:\n{self.spec}\n\n"
                     f"Navigate to {CONFIG['dev_server_url']}. Test every criterion in the sprint contract. "
-                    f"Take screenshots as evidence — save them to {screenshots_dir}/. "
-                    f"Write your evaluation as a response."
+                    f"Take screenshots as evidence — save them to {screenshots_dir}/.\n\n"
+                    f"IMPORTANT: Write your COMPLETE evaluation to this file using the Write "
+                    f"tool: {eval_path}\n"
+                    f"Also include the full evaluation in your text response."
                     f"{prev_eval_section}"
                 )
 
@@ -1210,53 +1350,100 @@ class Orchestrator:
                 timeout=CONFIG["agent_timeout_eval"],
                 model=resolve_agent_model("evaluator"),
             )
-            self._track_cost(eval_result, "eval")
+        except (AgentError, AgentTimeout):
+            # Track timing even on crash so duration data isn't lost
+            elapsed = int(time.time() - start)
+            self.state.add_sprint_timing(sprint.number, "eval", elapsed)
+            raise
 
-            # Preserve the most detailed evaluation content.
-            # The Evaluator may write a detailed per-criterion evaluation to
-            # evaluation.md via its Write tool, then return only a summary as
-            # its text response. Use whichever version has more criteria.
-            agent_response = eval_result.result
-            disk_eval = _read_file_optional(eval_path)
-            _, response_criteria = _parse_eval_score(agent_response)
-            _, disk_criteria = _parse_eval_score(disk_eval)
+        self._track_cost(eval_result, "eval")
 
-            if disk_criteria > response_criteria:
-                # Evaluator wrote a more detailed version to disk — keep it
-                best_eval = disk_eval
-                _log("Evaluator", f"{label} — Preserved disk evaluation ({disk_criteria} criteria) "
-                     f"over agent response ({response_criteria} criteria)")
-            else:
-                # Agent response is the detailed version (or equally detailed)
-                best_eval = agent_response
-                with open(eval_path, "w") as f:
-                    f.write(agent_response)
+        # Pick whichever source has more criteria: text response or disk file
+        best_eval = self._pick_best_eval(eval_result.result, eval_path)
 
-            # Save attempt-specific copy for quality tracking history
-            _save_agent_response(
-                sprint_dir,
-                f"evaluation_attempt_{attempt}.md",
-                best_eval,
-            )
-        finally:
-            pass  # Server stopped by _retry_build_eval
+        # Quality gate: the evaluation must contain per-criterion checkboxes.
+        # A summary-only response (e.g. "scored 98/115" with no checkboxes) is
+        # useless as Generator feedback — it doesn't say WHICH criteria failed.
+        final_result = eval_result
+        checkbox_count = _count_criteria(best_eval)
+        if checkbox_count == 0:
+            _log("Evaluator", f"{label} — 0 checkboxes in evaluation. Retrying once...")
+            try:
+                retry_result = await call_agent(
+                    system_prompt=self.evaluator_prompt,
+                    user_prompt=prompt,
+                    allowed_tools=TOOLS_EVALUATOR,
+                    mcp_servers=CONFIG.get("mcp_servers"),
+                    cwd=self.root,
+                    timeout=CONFIG["agent_timeout_eval"],
+                    model=resolve_agent_model("evaluator"),
+                )
+                self._track_cost(retry_result, "eval")
+                retry_eval = self._pick_best_eval(retry_result.result, eval_path)
+                if _count_criteria(retry_eval) > 0:
+                    best_eval = retry_eval
+                    final_result = retry_result
+                else:
+                    _log("Evaluator", f"{label} — Retry also returned 0 checkboxes.")
+            except (AgentError, AgentTimeout):
+                _log("Evaluator", f"{label} — Retry failed.")
+
+            # If still no checkboxes, keep previous attempt's detailed eval
+            if _count_criteria(best_eval) == 0:
+                prev_attempt = attempt - 1
+                prev_path = os.path.join(sprint_dir, f"evaluation_attempt_{prev_attempt}.md")
+                prev_eval = _read_file_optional(prev_path)
+                if prev_eval and _count_criteria(prev_eval) > 0:
+                    _log("Evaluator", f"{label} — Preserving previous attempt {prev_attempt} "
+                         f"eval as feedback ({_count_criteria(prev_eval)} checkboxes)")
+                    best_eval = prev_eval
+
+        # Criteria count drift detection: warn if Evaluator tested fewer criteria
+        # than were generated. This catches the Evaluator silently dropping criteria.
+        contract_criteria = _count_criteria(contract)
+        eval_criteria = _count_criteria(best_eval)
+        if eval_criteria > 0 and contract_criteria > 0:
+            drift = contract_criteria - eval_criteria
+            if drift > 5:
+                _log("Harness", f"{label} — ⚠ CRITERIA DRIFT: contract has {contract_criteria} "
+                     f"but eval tested {eval_criteria} ({drift} missing)")
+
+        # Write best eval to disk
+        with open(eval_path, "w") as f:
+            f.write(best_eval)
+
+        # Save attempt-specific copy for quality tracking history
+        _save_agent_response(
+            sprint_dir,
+            f"evaluation_attempt_{attempt}.md",
+            best_eval,
+        )
 
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "eval", elapsed)
 
-        passed = _check_verdict_pass(best_eval)
+        # PASS requires 100% criteria pass. Evaluator's Verdict line is
+        # informational only — the orchestrator enforces the hard gate.
+        eval_passed, eval_total = _parse_eval_score(best_eval)
+        if eval_total > 0 and eval_passed < eval_total:
+            passed = False
+            failed_count = eval_total - eval_passed
+            _log("Evaluator", f"{label} — {failed_count}/{eval_total} criteria failed. "
+                 f"PASS requires 100%.")
+        else:
+            passed = _check_verdict_pass(best_eval)
 
-        # Reject PASS if too many criteria were skipped as automation-limited
+        # Also reject if too many criteria were skipped as automation-limited
         if passed:
             limited, total = _parse_automation_limited(best_eval)
             if total > 0 and limited / total > 0.10:
                 _log("Evaluator",
-                     f"{label} — Verdict was PASS but {limited}/{total} criteria "
+                     f"{label} — {limited}/{total} criteria "
                      f"({int(limited/total*100)}%) marked automation-limited. "
                      f"Overriding to FAIL — too many untested features.")
                 passed = False
 
-        stats = _fmt_stats(eval_result, start)
+        stats = _fmt_stats(final_result, start)
         if passed:
             _log("Evaluator", f"{label} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
         else:
@@ -1266,7 +1453,6 @@ class Orchestrator:
             _print_required_changes(best_eval)
 
         # Track eval score for regression detection
-        eval_passed, eval_total = _parse_eval_score(best_eval)
         if eval_total > 0:
             pct = int(eval_passed / eval_total * 100)
             self.state.add_eval_score(sprint.number, attempt, eval_passed, eval_total)
@@ -1293,7 +1479,7 @@ class Orchestrator:
         label = self._sprint_label(sprint)
 
         _log("Verifier", f"{label} — Classifying criteria...")
-        typed_checks = await classify_criteria(contract, self.root)
+        typed_checks = classify_criteria(contract)
         deterministic = [c for c in typed_checks if c.check_type.value != "subjective"]
         subjective = [c for c in typed_checks if c.check_type.value == "subjective"]
         _log("Verifier", f"{label} — {len(deterministic)} deterministic + {len(subjective)} subjective criteria")
@@ -1301,33 +1487,25 @@ class Orchestrator:
         # Backup DB before verification (state reset)
         db_backup = backup_db(self.output_dir)
 
-        _log("Verifier", f"{label} — Starting servers...")
-        self.server.start()
-        try:
-            _log("Verifier", f"{label} — Running deterministic checks...")
-            start = time.time()
-            vresult = await run_verification(
-                typed_checks, CONFIG["dev_server_url"],
-                self.output_dir, artifacts_dir,
-            )
-            elapsed = int(time.time() - start)
+        # Server is already running (managed by _retry_build_eval)
+        _log("Verifier", f"{label} — Running deterministic checks...")
+        start = time.time()
+        vresult = await run_verification(
+            typed_checks, CONFIG["dev_server_url"],
+            self.output_dir, artifacts_dir,
+        )
+        elapsed = int(time.time() - start)
 
-            if vresult.overall_pass:
-                _log("Verifier", f"{label} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} "
-                     f"({len(vresult.passed)} passed, {len(vresult.subjective)} subjective, {elapsed}s)")
-            else:
-                _log("Verifier", f"{label} — {_C.RED}{_C.BOLD}FAIL{_C.RESET} "
-                     f"({len(vresult.failed)} failed, {len(vresult.passed)} passed, {elapsed}s)")
-                # Write feedback for Generator
-                eval_path = os.path.join(sprint_dir, "evaluation.md")
-                with open(eval_path, "w") as f:
-                    f.write(vresult.feedback_text())
-        finally:
-            _log("Verifier", f"{label} — Stopping servers...")
-            self.server.stop()
-            # Restore DB after verification (clean state for Evaluator)
-            if db_backup:
-                restore_db(self.output_dir, db_backup)
+        if vresult.overall_pass:
+            _log("Verifier", f"{label} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} "
+                 f"({len(vresult.passed)} passed, {len(vresult.subjective)} subjective, {elapsed}s)")
+        else:
+            _log("Verifier", f"{label} — {_C.RED}{_C.BOLD}FAIL{_C.RESET} "
+                 f"({len(vresult.failed)} failed, {len(vresult.passed)} passed, {elapsed}s)")
+
+        # Restore DB after verification (clean state for Evaluator)
+        if db_backup:
+            restore_db(self.output_dir, db_backup)
 
         return vresult
 
@@ -1449,11 +1627,9 @@ class Orchestrator:
                     else:
                         vresult = await self.verify(sprint, contract_path)
                         if vresult is not None and not vresult.overall_pass:
-                            _log("Harness", f"{label} — Verifier FAIL, skipping Evaluator (saving time + cost)")
-                            passed = False
-                        else:
-                            # evaluate() no longer starts server — it's already running
-                            passed = await self.evaluate(sprint, contract_path)
+                            _log("Harness", f"{label} — Verifier found {len(vresult.failed)} issue(s) (advisory, proceeding to Evaluator)")
+                        # Verifier is advisory — always proceed to Evaluator.
+                        passed = await self.evaluate(sprint, contract_path)
                         consecutive_crashes = 0
                 finally:
                     self.server.stop()
@@ -1615,20 +1791,43 @@ class Orchestrator:
                 )
                 self._track_cost(eval_result, "integration_eval")
 
-                # Preserve detailed evaluation (same logic as evaluate())
-                agent_response = eval_result.result
-                disk_eval = _read_file_optional(eval_path)
-                _, response_criteria = _parse_eval_score(agent_response)
-                _, disk_criteria = _parse_eval_score(disk_eval)
+                # Pick best eval by checkbox count (not Feature Pass Rate)
+                best_eval = self._pick_best_eval(eval_result.result, eval_path)
 
-                if disk_criteria > response_criteria:
-                    best_eval = disk_eval
-                    _log("Evaluator", f"Integration — Preserved disk evaluation "
-                         f"({disk_criteria} criteria) over agent response ({response_criteria} criteria)")
-                else:
-                    best_eval = agent_response
-                    with open(eval_path, "w") as f:
-                        f.write(agent_response)
+                # 0-checkbox retry
+                if _count_criteria(best_eval) == 0:
+                    _log("Evaluator", "Integration — 0 checkboxes in evaluation. Retrying once...")
+                    try:
+                        retry_result = await call_agent(
+                            system_prompt=self.evaluator_prompt,
+                            user_prompt=prompt,
+                            allowed_tools=TOOLS_EVALUATOR,
+                            mcp_servers=CONFIG.get("mcp_servers"),
+                            cwd=self.root,
+                            timeout=CONFIG["agent_timeout_integration"],
+                            model=resolve_agent_model("evaluator"),
+                        )
+                        self._track_cost(retry_result, "integration_eval")
+                        retry_eval = self._pick_best_eval(retry_result.result, eval_path)
+                        if _count_criteria(retry_eval) > 0:
+                            best_eval = retry_eval
+                        else:
+                            _log("Evaluator", "Integration — Retry also returned 0 checkboxes.")
+                    except (AgentError, AgentTimeout):
+                        _log("Evaluator", "Integration — Retry failed.")
+
+                    # Keep previous attempt's detailed eval if still no checkboxes
+                    if _count_criteria(best_eval) == 0:
+                        prev_path = os.path.join(
+                            self.comms_dir, f"integration_evaluation_attempt_{attempt - 1}.md"
+                        )
+                        prev_eval = _read_file_optional(prev_path)
+                        if prev_eval and _count_criteria(prev_eval) > 0:
+                            _log("Evaluator", f"Integration — Preserving previous attempt eval as feedback")
+                            best_eval = prev_eval
+
+                with open(eval_path, "w") as f:
+                    f.write(best_eval)
 
                 _save_agent_response(
                     self.comms_dir,
@@ -1646,11 +1845,27 @@ class Orchestrator:
             finally:
                 self.server.stop()
 
-            passed = _check_verdict_pass(best_eval)
+            # PASS requires 100% criteria pass
+            eval_passed, eval_total = _parse_eval_score(best_eval)
+            if eval_total > 0 and eval_passed < eval_total:
+                passed = False
+                failed_count = eval_total - eval_passed
+                _log("Evaluator", f"Integration — {failed_count}/{eval_total} criteria failed. "
+                     f"PASS requires 100%.")
+            else:
+                passed = _check_verdict_pass(best_eval)
+
+            # Automation-limited override
+            if passed:
+                limited, total = _parse_automation_limited(best_eval)
+                if total > 0 and limited / total > 0.10:
+                    _log("Evaluator", f"Integration — {limited}/{total} criteria "
+                         f"({int(limited/total*100)}%) automation-limited. Override to FAIL.")
+                    passed = False
+
             stats = _fmt_stats(eval_result, start)
 
             # Track integration eval score
-            eval_passed, eval_total = _parse_eval_score(best_eval)
             if eval_total > 0:
                 pct = int(eval_passed / eval_total * 100)
                 self.state.add_eval_score(0, attempt, eval_passed, eval_total)
@@ -1794,17 +2009,36 @@ class Orchestrator:
             self.server.start()
             eval_start = time.time()
             try:
+                # Include previous eval for regression comparison
+                prev_design_eval = ""
+                if iteration > 1:
+                    prev_design_path = os.path.join(
+                        self._sprint_dir(sprint), f"evaluation_design_{iteration - 1}.md"
+                    )
+                    prev_text = _read_file_optional(prev_design_path)
+                    if prev_text and _count_criteria(prev_text) > 0:
+                        prev_design_eval = (
+                            f"\n\n## Previous Design Evaluation (iteration {iteration - 1})\n\n"
+                            f"Compare your findings. Label regressions (was PASS, now FAIL) as "
+                            f"**REGRESSION**, fixes as **FIXED**, persistent failures as **PERSISTENT**.\n\n"
+                            f"{prev_text}"
+                        )
+
                 eval_prompt = (
                     f"Design Refinement Evaluation (iteration {iteration}).\n\n"
                     f"The backend is working. Focus your assessment on frontend design criteria: "
                     f"Design Quality, Originality, Craft, UI Functionality.\n\n"
                     f"Sprint contract:\n{contract}\n\n"
                     f"Product spec:\n{self.spec}\n\n"
+                    f"PASS requires ALL criteria to pass. Even 1 failure = FAIL verdict.\n\n"
                     f"Navigate to {CONFIG['dev_server_url']}. "
                     f"Evaluate the visual design against the spec's design language. "
                     f"Also verify that backend functionality was NOT broken by the design changes. "
-                    f"Take screenshots — save to {screenshots_dir}/. "
-                    f"Write your evaluation as a response."
+                    f"Take screenshots — save to {screenshots_dir}/.\n\n"
+                    f"IMPORTANT: Write your COMPLETE evaluation to this file using the Write "
+                    f"tool: {eval_path}\n"
+                    f"Also include the full evaluation in your text response."
+                    f"{prev_design_eval}"
                 )
                 eval_result = await call_agent(
                     system_prompt=self.evaluator_prompt,
@@ -1816,12 +2050,49 @@ class Orchestrator:
                     model=resolve_agent_model("evaluator"),
                 )
                 self._track_cost(eval_result, "design_eval")
+
+                # Pick best eval by checkbox count
+                best_eval = self._pick_best_eval(eval_result.result, eval_path)
+
+                # 0-checkbox retry
+                if _count_criteria(best_eval) == 0:
+                    _log("Evaluator", f"Design eval {iteration} — 0 checkboxes. Retrying once...")
+                    try:
+                        retry_result = await call_agent(
+                            system_prompt=self.evaluator_prompt,
+                            user_prompt=eval_prompt,
+                            allowed_tools=TOOLS_EVALUATOR,
+                            mcp_servers=CONFIG.get("mcp_servers"),
+                            cwd=self.root,
+                            timeout=CONFIG["agent_timeout_eval"],
+                            model=resolve_agent_model("evaluator"),
+                        )
+                        self._track_cost(retry_result, "design_eval")
+                        retry_eval = self._pick_best_eval(retry_result.result, eval_path)
+                        if _count_criteria(retry_eval) > 0:
+                            best_eval = retry_eval
+                        else:
+                            _log("Evaluator", f"Design eval {iteration} — Retry also returned 0 checkboxes.")
+                    except (AgentError, AgentTimeout):
+                        _log("Evaluator", f"Design eval {iteration} — Retry failed.")
+
+                    # Keep previous iteration's eval if still no checkboxes
+                    if _count_criteria(best_eval) == 0 and iteration > 1:
+                        prev_path = os.path.join(
+                            self._sprint_dir(sprint), f"evaluation_design_{iteration - 1}.md"
+                        )
+                        prev_eval = _read_file_optional(prev_path)
+                        if prev_eval and _count_criteria(prev_eval) > 0:
+                            _log("Evaluator", f"Design eval {iteration} — Preserving iteration "
+                                 f"{iteration - 1} eval as feedback")
+                            best_eval = prev_eval
+
                 with open(eval_path, "w") as f:
-                    f.write(eval_result.result)
+                    f.write(best_eval)
                 _save_agent_response(
                     self._sprint_dir(sprint),
                     f"evaluation_design_{iteration}.md",
-                    eval_result.result,
+                    best_eval,
                 )
             except AgentTimeout as exc:
                 _log("Harness", f"Design eval {iteration} TIMEOUT: {exc}")
@@ -1833,7 +2104,16 @@ class Orchestrator:
             finally:
                 self.server.stop()
 
-            passed = _check_verdict_pass(eval_result.result)
+            # PASS requires 100% criteria pass
+            dr_passed, dr_total = _parse_eval_score(best_eval)
+            if dr_total > 0 and dr_passed < dr_total:
+                passed = False
+            else:
+                passed = _check_verdict_pass(best_eval)
+
+            # Track design eval score
+            if dr_total > 0:
+                self.state.add_eval_score(sprint.number, iteration, dr_passed, dr_total)
             stats = _fmt_stats(eval_result, eval_start)
             if passed:
                 _log("Evaluator", f"Design eval {iteration} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
@@ -1869,12 +2149,19 @@ class Orchestrator:
             f"Review these testable criteria BEFORE you start building. "
             f"You will be evaluated against each one.\n\n"
             f"Criteria:\n{criteria_text}\n\n"
-            f"For each criterion, briefly assess:\n"
-            f"1. Is it clear what to build and how to verify it?\n"
-            f"2. Are there any that conflict with each other?\n"
-            f"3. Are there any that are technically impossible to implement?\n\n"
-            f"Write a brief review (10-20 lines). Flag any issues. "
-            f"Then write ACKNOWLEDGED to confirm you understand the full scope.\n\n"
+            f"STEP 1 — Declare your technical architecture:\n"
+            f"State your stack choices: CSR vs SSR, framework, database, etc.\n"
+            f"Example: 'React SPA (CSR) + FastAPI + SQLite'\n\n"
+            f"STEP 2 — Check for architecture-criteria conflicts:\n"
+            f"Some criteria assume specific rendering patterns. For example:\n"
+            f"- 'Loading skeleton visible during data fetch' requires CSR (client-side rendering). "
+            f"If you choose SSR, data is pre-rendered and no loading state exists.\n"
+            f"- 'Page transition animation' requires SPA routing. "
+            f"If you choose MPA with full page reloads, transitions won't work.\n\n"
+            f"For EACH conflicting criterion, explain WHY it conflicts and HOW you'll "
+            f"handle it (change your architecture, or implement a workaround).\n\n"
+            f"STEP 3 — Confirm:\n"
+            f"Write ACKNOWLEDGED to confirm you understand the full scope.\n\n"
             f"Do NOT start building yet. Just review and acknowledge."
         )
 
@@ -1974,15 +2261,10 @@ class Orchestrator:
         total_usd = cost.get("total_usd", 0)
         if total_usd > 0:
             print(f"  Cost:           ${total_usd:.2f}")
-        input_t = cost.get("input_tokens", 0)
-        output_t = cost.get("output_tokens", 0)
-        if input_t or output_t:
-            print(f"  Tokens:         {input_t:,} in / {output_t:,} out")
             by_phase = cost.get("by_phase", {})
-            for phase, pcost in sorted(by_phase.items()):
-                pi = pcost.get("input_tokens", 0)
-                po = pcost.get("output_tokens", 0)
-                print(f"    {phase:16s} {pi:,} in / {po:,} out")
+            if by_phase:
+                for phase, phase_usd in sorted(by_phase.items()):
+                    print(f"    {phase:16s} ${phase_usd:.2f}")
 
         print(f"  Total time:     {_elapsed(total_start)}")
         print("=" * 60)
@@ -2581,6 +2863,20 @@ def _cmd_clean(clean_all: bool = False):
     print()
 
 
+def _find_existing_output(orch: "Orchestrator") -> str:
+    """Find the existing output directory for standalone commands.
+
+    Unlike _init_output() which creates new directories, this finds the
+    most recent build matching the current spec.
+    """
+    slug = _slug_from_spec(orch.spec)
+    output_dir = os.path.join(orch.output_base, slug)
+    if not os.path.isdir(output_dir):
+        print(f"{_C.RED}Output directory not found: {output_dir}{_C.RESET}")
+        sys.exit(1)
+    return output_dir
+
+
 def _cmd_verify():
     """Run deterministic verifier on the last build without rebuilding."""
     harness_root = get_harness_root()
@@ -2591,7 +2887,9 @@ def _cmd_verify():
         sys.exit(1)
 
     orch._spec = _read_file(orch.spec_path)
-    orch._init_output()
+    orch.output_dir = _find_existing_output(orch)
+    orch.server = _make_server(orch.comms_dir, orch.output_dir)
+    _log_init(os.path.join(orch.output_dir, "harness.log"))
 
     sprint = Sprint(number=1, name="Full Build")
     sprint_dir = orch._sprint_dir(sprint)
@@ -2602,7 +2900,11 @@ def _cmd_verify():
 
     async def _run():
         _log("Harness", "=== Verify-only mode ===")
-        vresult = await orch.verify(sprint, contract_path)
+        orch.server.start()
+        try:
+            vresult = await orch.verify(sprint, contract_path)
+        finally:
+            orch.server.stop()
         if vresult is None:
             _log("Harness", "Verifier is disabled in config.")
             return
@@ -2627,13 +2929,14 @@ def _cmd_eval():
     harness_root = get_harness_root()
     orch = Orchestrator(root_dir=harness_root)
 
-    # Restore state from existing artifacts
     if not os.path.exists(orch.spec_path):
         print(f"{_C.RED}No spec found. Run the harness first.{_C.RESET}")
         sys.exit(1)
 
     orch._spec = _read_file(orch.spec_path)
-    orch._init_output()
+    orch.output_dir = _find_existing_output(orch)
+    orch.server = _make_server(orch.comms_dir, orch.output_dir)
+    _log_init(os.path.join(orch.output_dir, "harness.log"))
 
     sprint = Sprint(number=1, name="Full Build")
     sprint_dir = orch._sprint_dir(sprint)
@@ -2644,7 +2947,11 @@ def _cmd_eval():
 
     async def _run():
         _log("Harness", "=== Eval-only mode ===")
-        passed = await orch.evaluate(sprint, contract_path)
+        orch.server.start()
+        try:
+            passed = await orch.evaluate(sprint, contract_path)
+        finally:
+            orch.server.stop()
         icon = f"{_C.GREEN}PASS{_C.RESET}" if passed else f"{_C.RED}FAIL{_C.RESET}"
         _log("Harness", f"Result: {icon}")
 
@@ -2663,7 +2970,9 @@ def _cmd_build():
         sys.exit(1)
 
     orch._spec = _read_file(orch.spec_path)
-    orch._init_output()
+    orch.output_dir = _find_existing_output(orch)
+    orch.server = _make_server(orch.comms_dir, orch.output_dir)
+    _log_init(os.path.join(orch.output_dir, "harness.log"))
 
     sprint = Sprint(number=1, name="Full Build")
     sprint_dir = orch._sprint_dir(sprint)

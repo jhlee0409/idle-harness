@@ -16,7 +16,6 @@ from enum import Enum
 
 import httpx
 
-from cli import call_agent, AgentError
 from config import CONFIG
 
 
@@ -80,133 +79,129 @@ class VerificationResult:
         return "\n".join(lines)
 
 
-# --- Criteria Classification ---
+# --- Criteria Classification (deterministic, regex-based) ---
 
-_CLASSIFY_PROMPT = """Classify each testable criterion into one of these types.
-IMPORTANT: Be AGGRESSIVE about classifying as deterministic. Only use "subjective" for
-things that truly require human aesthetic judgment (originality, cohesion, design feel).
+# Patterns ordered by specificity. First match wins.
+_CLASSIFY_RULES: list[tuple[CheckType, re.Pattern, dict]] = [
+    # API: explicit endpoint mentions
+    (CheckType.API, re.compile(
+        r"(GET|POST|PUT|PATCH|DELETE)\s+/api/|/api/\w+|"
+        r"returns?\s+(valid\s+)?JSON|status\s+(code\s+)?\d{3}|"
+        r"endpoint|REST\s+API",
+        re.IGNORECASE,
+    ), {}),
+    # Build: compilation, npm/pip commands
+    (CheckType.BUILD, re.compile(
+        r"npm\s+run\s+build|npx\s+|pip\s+install|vite\s+build|"
+        r"tsc\s+|webpack|compilation|build\s+succeed",
+        re.IGNORECASE,
+    ), {}),
+    # Responsive: viewport widths, mobile/tablet keywords
+    (CheckType.RESPONSIVE, re.compile(
+        r"\b(375|390|414|768|1024|1280|1440)px\b.*("
+        r"viewport|mobile|tablet|desktop|hamburger|"
+        r"horizontal\s+scroll|breakpoint|bottom\s+nav|"
+        r"icon.?rail|collapses?)",
+        re.IGNORECASE,
+    ), {}),
+    # Persistence: data survives refresh
+    (CheckType.PERSISTENCE, re.compile(
+        r"persist|page\s+refresh|reload|survives?\s+|"
+        r"still\s+(visible|present|shows?|exists?)|"
+        r"after\s+(a\s+)?(full\s+)?page\s+refresh",
+        re.IGNORECASE,
+    ), {}),
+    # Perf: timing, speed
+    (CheckType.PERF, re.compile(
+        r"load\s+time|response\s+time|latency|"
+        r"within\s+\d+\s*ms|milliseconds|performance",
+        re.IGNORECASE,
+    ), {}),
+]
 
-Types:
-- api: Mentions API endpoints, HTTP requests, status codes, response data, /api/ paths
-- css: Mentions specific CSS values: hex colors (#0F0F0F), px sizes, font-family names,
-  border-radius, opacity, background-color, shadows. If it has a # hex code or px value, it's css.
-- ui: Tests element existence, button clicks, navigation, form submissions, page transitions
-- responsive: Mentions viewport widths (375px, 768px, 1440px), mobile, tablet, hamburger menu
-- build: Tests compilation, npm build, imports, server startup
-- persistence: Tests that data survives page refresh, database storage
-- perf: Tests speed, response time, load time
-- subjective: ONLY for aesthetic judgment that CANNOT be measured: "feels cohesive",
-  "design is original", "app has character". If ANY concrete metric exists (a color value,
-  a size, a specific element), it is NOT subjective.
-
-EXAMPLES:
-- "Background is #0F0F0F" → css (has hex color)
-- "Recipe titles in Fraunces serif" → css (has font-family name)
-- "Cards have 0px border-radius" → css (has px value)
-- "375px: hamburger menu visible" → responsive (has viewport width)
-- "API returns list of recipes" → api (mentions API)
-- "Data persists after refresh" → persistence
-- "Design feels cohesive and editorial" → subjective (no concrete metric)
-- "Heart icon on recipe card" → ui (element existence)
-- "Search results update after typing" → ui (interaction)
-
-For each criterion, output a JSON object with:
-  {"criterion": "original text", "type": "api|css|ui|responsive|build|persistence|perf|subjective", "details": {...}}
-
-Details vary by type:
-- api: {"method": "GET|POST", "path": "/api/...", "expect_status": 200}
-- css: {"selector": "element", "property": "background-color", "expected": "#0F0F0F"}
-- ui: {"url": "/path", "expect_elements": ["button", "form"]}
-- responsive: {"viewport_width": 375, "expect": "no horizontal scroll"}
-- build: {"command": "npm run build"}
-- persistence: {"action": "create recipe, refresh, verify exists"}
-- perf: {"metric": "response_time", "threshold_ms": 1000}
-- subjective: {}
-
-Output a JSON array. One object per criterion. No markdown, no explanation.
-
-Criteria:
-"""
-
-# Cache for classified criteria (same criteria text → same classification)
-_classification_cache: dict[str, list[TypedCheck]] = {}
+# API detail extraction: pull method + path from criterion text
+_API_DETAIL_RE = re.compile(
+    r"(GET|POST|PUT|PATCH|DELETE)\s+(/api/[\w/:?=&-]+)", re.IGNORECASE
+)
 
 
-async def classify_criteria(criteria_text: str, cwd: str) -> list[TypedCheck]:
-    """Classify natural-language criteria into typed checks using an LLM."""
-    cache_key = criteria_text.strip()
-    if cache_key in _classification_cache:
-        return _classification_cache[cache_key]
+def _classify_one(criterion: str) -> TypedCheck:
+    """Classify a single criterion using regex rules. Deterministic."""
+    for check_type, pattern, _ in _CLASSIFY_RULES:
+        if pattern.search(criterion):
+            details = {}
+            if check_type == CheckType.API:
+                m = _API_DETAIL_RE.search(criterion)
+                if m:
+                    details = {"method": m.group(1).upper(), "path": m.group(2)}
+            return TypedCheck(criterion=criterion, check_type=check_type, details=details)
+    # Default: subjective (requires Playwright / LLM Evaluator)
+    return TypedCheck(criterion=criterion, check_type=CheckType.SUBJECTIVE)
 
-    # Extract criteria lines
-    criteria_lines = []
+
+def classify_criteria(criteria_text: str) -> list[TypedCheck]:
+    """Classify criteria into typed checks using deterministic regex rules.
+
+    No LLM call. Same input always produces same output.
+    """
+    checks = []
     for line in criteria_text.split("\n"):
         stripped = line.strip()
         if re.match(r"^- \[[x ]\] ", stripped):
-            # Strip the checkbox prefix
             text = re.sub(r"^- \[[x ]\] ", "", stripped)
-            criteria_lines.append(text)
-
-    if not criteria_lines:
-        return []
-
-    prompt = _CLASSIFY_PROMPT + "\n".join(f"- {c}" for c in criteria_lines)
-
-    try:
-        result = await call_agent(
-            system_prompt="You are a criteria classifier. Output only valid JSON.",
-            user_prompt=prompt,
-            allowed_tools=[],
-            cwd=cwd,
-            timeout=300,  # 5 min — 162 criteria generates a large JSON array
-            model=CONFIG.get("model", "claude-opus-4-6"),
-        )
-
-        # Parse JSON from response (might be wrapped in markdown code block)
-        text = result.result.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```\w*\n?", "", text)
-            text = re.sub(r"\n?```$", "", text)
-
-        checks_data = json.loads(text)
-        checks = []
-        for item in checks_data:
-            try:
-                check_type = CheckType(item.get("type", "subjective"))
-            except ValueError:
-                check_type = CheckType.SUBJECTIVE
-            checks.append(TypedCheck(
-                criterion=item.get("criterion", ""),
-                check_type=check_type,
-                details=item.get("details", {}),
-            ))
-
-        _classification_cache[cache_key] = checks
-        return checks
-
-    except (AgentError, json.JSONDecodeError, KeyError):
-        # Fallback: all criteria are subjective
-        return [
-            TypedCheck(criterion=c, check_type=CheckType.SUBJECTIVE)
-            for c in criteria_lines
-        ]
+            checks.append(_classify_one(text))
+    return checks
 
 
 # --- Deterministic Verification ---
 
 async def verify_api(check: TypedCheck, base_url: str, artifacts_dir: str) -> CheckResult:
-    """Verify an API endpoint returns expected status."""
+    """Verify an API endpoint returns expected status.
+
+    Handles :id placeholders by first fetching the resource list via GET
+    and substituting the first available ID.
+    """
     details = check.details
     method = details.get("method", "GET").upper()
     path = details.get("path", "/")
     expect_status = details.get("expect_status", 200)
-    url = f"{base_url.rstrip('/')}{path}"
+    base = base_url.rstrip("/")
 
     timeout = CONFIG.get("verifier_check_timeout", 30)
     try:
+        body = details.get("body")
         async with httpx.AsyncClient(timeout=timeout) as client:
+            # Resolve :id placeholder — fetch the collection and use first ID
+            if ":id" in path:
+                collection_path = re.sub(r"/:[^/]+$", "", path)
+                collection_url = f"{base}{collection_path}"
+                try:
+                    list_resp = await client.get(collection_url)
+                    items = list_resp.json()
+                    if isinstance(items, list) and items and "id" in items[0]:
+                        path = path.replace(":id", str(items[0]["id"]))
+                    else:
+                        return CheckResult(
+                            criterion=check.criterion, check_type=check.check_type,
+                            status=CheckStatus.INCONCLUSIVE,
+                            message=f"No resources found at {collection_url} to resolve :id",
+                        )
+                except Exception:
+                    return CheckResult(
+                        criterion=check.criterion, check_type=check.check_type,
+                        status=CheckStatus.INCONCLUSIVE,
+                        message=f"Failed to resolve :id from {collection_url}",
+                    )
+
+            url = f"{base}{path}"
             if method == "POST":
-                resp = await client.post(url, json=details.get("body", {}))
+                resp = await client.post(url, json=body if body else {})
+            elif method == "PUT":
+                resp = await client.put(url, json=body if body else {})
+            elif method == "PATCH":
+                resp = await client.patch(url, json=body) if body else await client.patch(url)
+            elif method == "DELETE":
+                resp = await client.delete(url)
             else:
                 resp = await client.get(url)
 

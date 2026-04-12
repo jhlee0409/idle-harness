@@ -14,7 +14,7 @@ def test_init_creates_status_file():
             data = json.load(f)
         assert data["phase"] == "planning"
         assert data["sprint_attempts"] == {}
-        assert data["cost"] == {"input_tokens": 0, "output_tokens": 0}
+        assert data["cost"] == {"total_usd": 0.0, "by_phase": {}}
 
 
 def test_set_phase():
@@ -67,26 +67,25 @@ def test_cost_tracking():
     with tempfile.TemporaryDirectory() as tmpdir:
         state = HarnessState(tmpdir)
         state.init()
-        state.add_cost(1000, 500)
-        state.add_cost(2000, 800)
+        state.add_cost_usd(1.50)
+        state.add_cost_usd(2.25)
         data = state.load()
-        assert data["cost"]["input_tokens"] == 3000
-        assert data["cost"]["output_tokens"] == 1300
+        assert data["cost"]["total_usd"] == 3.75
 
 
 def test_cost_tracking_by_phase():
     with tempfile.TemporaryDirectory() as tmpdir:
         state = HarnessState(tmpdir)
         state.init()
-        state.add_cost(1000, 500, "planner")
-        state.add_cost(5000, 2000, "build")
-        state.add_cost(3000, 1000, "build")
-        state.add_cost(800, 300, "eval")
+        state.add_cost_usd(0.18, "planner")
+        state.add_cost_usd(4.67, "build")
+        state.add_cost_usd(2.92, "build")
+        state.add_cost_usd(7.71, "eval")
         data = state.load()
-        assert data["cost"]["input_tokens"] == 9800
-        assert data["cost"]["by_phase"]["planner"]["input_tokens"] == 1000
-        assert data["cost"]["by_phase"]["build"]["input_tokens"] == 8000
-        assert data["cost"]["by_phase"]["eval"]["output_tokens"] == 300
+        assert abs(data["cost"]["total_usd"] - 15.48) < 0.01
+        assert abs(data["cost"]["by_phase"]["planner"] - 0.18) < 0.01
+        assert abs(data["cost"]["by_phase"]["build"] - 7.59) < 0.01
+        assert abs(data["cost"]["by_phase"]["eval"] - 7.71) < 0.01
 
 
 def test_sprint_results_persistence():

@@ -325,14 +325,14 @@ async def test_plan_tracks_cost():
         async def mock_planner(*args, **kwargs):
             with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
                 f.write(SAMPLE_SPEC)
-            return AgentResult(result="Done", input_tokens=5000, output_tokens=2000, turns=5)
+            return AgentResult(result="Done", input_tokens=5000, output_tokens=2000, turns=5, cost_usd=0.18)
 
         with patch("orchestrator.call_agent", side_effect=mock_planner):
             await orch.plan("Build a test app")
 
         status = orch.state.load()
-        assert status["cost"]["input_tokens"] == 5000
-        assert status["cost"]["output_tokens"] == 2000
+        assert abs(status["cost"]["total_usd"] - 0.18) < 0.01
+        assert abs(status["cost"]["by_phase"]["planner"] - 0.18) < 0.01
 
 
 # --- InfraError stops retries ---
@@ -478,9 +478,12 @@ async def test_integration_eval_fail():
                 with patch("orchestrator._ask_user_continue"):
                     await orch._integration_eval()
 
-        # max_build_attempts evals + (max_build_attempts - 1) generator fixes
+        # Each eval: original + 0-checkbox retry = 2 calls per attempt
+        # Plus (max_attempts - 1) generator fix calls
         max_attempts = CONFIG["max_build_attempts"]
-        expected_calls = max_attempts + (max_attempts - 1)  # evals + fixes
+        eval_calls = max_attempts * 2  # original + retry (mock has no checkboxes)
+        fix_calls = max_attempts - 1
+        expected_calls = eval_calls + fix_calls
         assert mock.call_count == expected_calls
         status = orch.state.load()
         assert status["sprint_results"]["0"] is False
@@ -736,8 +739,8 @@ def test_parse_automation_limited_empty():
 # --- Verifier integration ---
 
 @pytest.mark.anyio
-async def test_verifier_fail_skips_evaluate():
-    """When verifier FAILs, evaluate() should NOT be called."""
+async def test_verifier_fail_still_evaluates():
+    """Verifier is advisory — evaluate() runs even when verifier FAILs."""
     with tempfile.TemporaryDirectory() as tmpdir:
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
@@ -784,7 +787,7 @@ async def test_verifier_fail_skips_evaluate():
             await orch._retry_build_eval(sprint, contract_path, "Build")
 
         assert build_called
-        assert not eval_called  # evaluate should NOT have been called
+        assert eval_called  # Verifier is advisory — evaluate always runs
 
 
 @pytest.mark.anyio
@@ -859,6 +862,69 @@ def test_parse_eval_score_all_pass():
     passed, total = _parse_eval_score(text)
     assert passed == 3
     assert total == 3
+
+
+def test_parse_eval_score_prefers_feature_pass_rate():
+    """When Evaluator writes an explicit Feature Pass Rate line, use that
+    instead of counting checkboxes (which may include extra summary sections)."""
+    from orchestrator import _parse_eval_score
+    text = (
+        "- [x] A\n- [x] B\n- [ ] C\n"
+        "### Full-Stack Verification\n"
+        "- [x] Data persists\n- [x] API works\n- [x] Errors handled\n"
+        "\n### Feature Pass Rate: 2/3 (67%)\n"
+    )
+    passed, total = _parse_eval_score(text)
+    # Should use the explicit 2/3, not count all 6 checkboxes
+    assert passed == 2
+    assert total == 3
+
+
+# --- _pick_best_eval: checkbox-based comparison ---
+
+def test_pick_best_eval_prefers_checkboxes_over_summary():
+    """A summary with Feature Pass Rate but 0 checkboxes must NOT win over
+    a disk eval with actual checkboxes. This is the $215 bug regression test."""
+    summary = (
+        "**Feature Pass Rate: 98/115 (85%)**\n\n"
+        "14 persistent failures.\n"
+    )
+    detailed = (
+        "- [x] Feature A works\n"
+        "- [x] Feature B works\n"
+        "- [ ] Feature C broken\n"
+    )
+    import tempfile as _tf
+    with _tf.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+        f.write(detailed)
+        disk_path = f.name
+    try:
+        result = Orchestrator._pick_best_eval(summary, disk_path)
+        assert "- [x] Feature A" in result
+        assert "Feature Pass Rate" not in result
+    finally:
+        os.remove(disk_path)
+
+
+def test_pick_best_eval_prefers_more_checkboxes():
+    """When both have checkboxes, pick the one with more."""
+    response = "- [x] A\n- [ ] B\n"
+    detailed = "- [x] A\n- [x] B\n- [ ] C\n- [x] D\n"
+    import tempfile as _tf
+    with _tf.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+        f.write(detailed)
+        disk_path = f.name
+    try:
+        result = Orchestrator._pick_best_eval(response, disk_path)
+        assert "- [x] D" in result
+    finally:
+        os.remove(disk_path)
+
+
+def test_count_criteria_counts_both_pass_and_fail():
+    from orchestrator import _count_criteria
+    text = "- [x] pass\n- [ ] fail\n- [x] pass2\nno checkbox here\n"
+    assert _count_criteria(text) == 3
 
 
 # --- Evaluation preservation (overwrite bug fix) ---
@@ -1105,7 +1171,7 @@ def test_state_eval_score_tracking():
 
 @pytest.mark.anyio
 async def test_self_eval_discrepancy_logged():
-    """When self-eval claims 100% but last eval was <80%, discrepancy is logged."""
+    """When self-eval verified % exceeds last eval by >10pp, discrepancy is logged."""
     with tempfile.TemporaryDirectory() as tmpdir:
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
@@ -1124,11 +1190,12 @@ async def test_self_eval_discrepancy_logged():
         # Record a previous eval score of 50%
         orch.state.add_eval_score(1, 1, 50, 100)
 
-        # Generator claims 100% in self_eval
+        # Generator claims 100% verified but Evaluator only found 50%
         self_eval_content = (
             "# Self-Evaluation\n"
-            "- [x] Feature A\n- [x] Feature B\n"
-            "Self-eval pass rate: 2/2 (100%)\n"
+            "- [x] Feature A — verified via curl\n"
+            "- [x] Feature B — verified via curl\n"
+            "Self-eval: 2 verified, 0 unverified, 0 not implemented out of 2 total\n"
         )
 
         # Mock call_agent to write self_eval.md
@@ -1439,7 +1506,11 @@ async def test_evaluate_dispatches_single_for_small_criteria():
 
 @pytest.mark.anyio
 async def test_evaluate_dispatches_parallel_for_many_sections():
-    """Multiple sections with enough criteria → parallel path."""
+    """Parallel eval is disabled — evaluate() always uses _evaluate_single.
+
+    This test verifies evaluate() calls _evaluate_single regardless of criteria count.
+    (Parallel eval was disabled in 13d9e9e — not production-ready.)
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         orch = _setup_orch(tmpdir)
         with open(os.path.join(tmpdir, "comms", "spec.md"), "w") as f:
@@ -1452,29 +1523,27 @@ async def test_evaluate_dispatches_parallel_for_many_sections():
         sprint_dir = os.path.join(tmpdir, "comms", "sprints", "sprint-1")
         os.makedirs(sprint_dir, exist_ok=True)
         contract_path = os.path.join(sprint_dir, "sprint_contract.md")
-        # Many sections with enough criteria to trigger parallel
+        # Many sections with enough criteria
         criteria = "\n".join([
             "### Visual Design\n" + "\n".join(f"- [ ] Design criterion {i}" for i in range(10)),
-            "### Responsive Design\n" + "\n".join(f"- [ ] Responsive criterion {i}" for i in range(5)),
             "### P0: Feature A\n" + "\n".join(f"- [ ] Feature A criterion {i}" for i in range(15)),
             "### P1: Feature B\n" + "\n".join(f"- [ ] Feature B criterion {i}" for i in range(12)),
-            "### P2: Feature C\n" + "\n".join(f"- [ ] Feature C criterion {i}" for i in range(10)),
         ])
         with open(contract_path, "w") as f:
             f.write(criteria)
 
-        parallel_called = False
+        single_called = False
 
-        async def mock_parallel(s, cp, buckets):
-            nonlocal parallel_called
-            parallel_called = True
-            assert len(buckets) >= 2  # at least lead + 1 feature bucket
+        async def mock_single(s, cp):
+            nonlocal single_called
+            single_called = True
             return True
 
-        with patch.object(orch, "_evaluate_parallel", side_effect=mock_parallel):
-            await orch.evaluate(sprint, contract_path)
+        with patch.object(orch, "_evaluate_single", side_effect=mock_single):
+            result = await orch.evaluate(sprint, contract_path)
 
-        assert parallel_called
+        assert single_called
+        assert result is True
 
 
 @pytest.mark.anyio

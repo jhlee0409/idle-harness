@@ -14,7 +14,7 @@ class HarnessState:
             "current_sprint": 0,
             "total_sprints": 0,
             "sprint_attempts": {},
-            "cost": {"input_tokens": 0, "output_tokens": 0},
+            "cost": {"total_usd": 0.0, "by_phase": {}},
             "timings": {"plan": 0, "sprints": []},
         }
 
@@ -92,22 +92,13 @@ class HarnessState:
             for e in data.get("sprint_attempts", {}).values()
         )
 
-    def add_cost_usd(self, amount: float):
+    def add_cost_usd(self, amount: float, label: str = ""):
         data = self.load()
-        cost = data.setdefault("cost", {})
+        cost = data.setdefault("cost", {"total_usd": 0.0, "by_phase": {}})
         cost["total_usd"] = cost.get("total_usd", 0.0) + amount
-        self._save(data)
-
-    def add_cost(self, input_tokens: int, output_tokens: int, label: str = ""):
-        data = self.load()
-        cost = data.setdefault("cost", {"input_tokens": 0, "output_tokens": 0, "by_phase": {}})
-        cost["input_tokens"] += input_tokens
-        cost["output_tokens"] += output_tokens
         if label:
             by_phase = cost.setdefault("by_phase", {})
-            phase_cost = by_phase.setdefault(label, {"input_tokens": 0, "output_tokens": 0})
-            phase_cost["input_tokens"] += input_tokens
-            phase_cost["output_tokens"] += output_tokens
+            by_phase[label] = by_phase.get(label, 0.0) + amount
         self._save(data)
 
     def set_sprint_result(self, sprint_num: int, passed: bool):

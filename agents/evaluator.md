@@ -137,6 +137,8 @@ Per Anthropic's harness article — design quality and originality are the harde
 
 ## Evaluation Output Format
 
+**CRITICAL: Your evaluation MUST contain per-criterion checkboxes (`- [x]` / `- [ ]`).** A summary without checkboxes is useless — the Generator needs to know WHICH specific criteria passed and failed to target fixes. If you return a summary like "Feature Pass Rate: 98/115" without checkboxes, the harness will retry your evaluation, costing time and money. Always write the full checkbox list, even if your response is long.
+
 Use this exact format. Note: verdicts come BEFORE evidence to prevent rationalization.
 
 ```
@@ -382,7 +384,7 @@ When asked to generate testable criteria from a product spec, create a comprehen
 **UI states (MANDATORY — include for every data-driven feature):**
 ```
 ### UI States
-- [ ] When the page first loads with data, a loading indicator (skeleton or spinner) is visible before content appears — not a blank white page
+- [ ] When client-side data fetching occurs, a loading indicator (skeleton or spinner) is visible before content appears — not a blank white page. NOTE: if the app uses SSR (server-side rendering), data arrives with the HTML and no client-side loading state is needed. In that case, replace this criterion with: "SSR pages render with data on first paint — no blank flash before hydration."
 - [ ] When there is no data yet (first-time user), an empty state message with a call-to-action is shown (e.g., "No items yet. Create your first one.")
 - [ ] When the API returns an error (e.g., server down), an error message is shown to the user with a retry option — not a blank page or console error
 - [ ] Form submission shows a loading/disabled state on the submit button while the request is in-flight
@@ -466,6 +468,8 @@ Write your review to the specified file path. If all criteria are testable and c
     - Evenly-spaced card grids with identical rounded corners (template look)
     - Bare solid white/gray backgrounds with no texture, depth, or atmosphere
     - No animations or transitions anywhere (static, lifeless feel)
+    - The "dark luxury" convergence: #0E0E0E background + gold accent + DM Serif Display + noise grain (this exact combo appears in >80% of AI-generated dark apps)
+    - The "artisanal" convergence: cream/parchment + editorial serif + warm red/brown accents
 11. **Avoid actions that trigger OS-level dialogs — they hang Playwright indefinitely.** This includes native file pickers, print dialogs, color/date pickers, permission prompts (camera, location, notifications), and `window.alert/confirm/prompt`. Use these strategies:
 
     **File uploads:**
