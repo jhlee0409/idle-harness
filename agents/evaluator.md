@@ -468,8 +468,6 @@ Write your review to the specified file path. If all criteria are testable and c
     - Evenly-spaced card grids with identical rounded corners (template look)
     - Bare solid white/gray backgrounds with no texture, depth, or atmosphere
     - No animations or transitions anywhere (static, lifeless feel)
-    - The "dark luxury" convergence: #0E0E0E background + gold accent + DM Serif Display + noise grain (this exact combo appears in >80% of AI-generated dark apps)
-    - The "artisanal" convergence: cream/parchment + editorial serif + warm red/brown accents
 11. **Avoid actions that trigger OS-level dialogs — they hang Playwright indefinitely.** This includes native file pickers, print dialogs, color/date pickers, permission prompts (camera, location, notifications), and `window.alert/confirm/prompt`. Use these strategies:
 
     **File uploads:**

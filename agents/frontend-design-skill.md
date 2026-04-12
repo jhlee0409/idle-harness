@@ -37,20 +37,7 @@ Pick ONE. Each direction includes what it looks like, what it does NOT look like
 - **Organic/natural** — Earthy tones, irregular shapes, leaf/branch motifs, hand-drawn lines. Think a botany journal app. NOT: geometric, dark, high-tech.
 - **Art deco geometric** — Symmetrical patterns, gold lines on dark, chevron/fan motifs, Gatsby era. Think The Grand Budapest Hotel credits. NOT: organic shapes, pastel, casual.
 
-## Anti-Convergence Rules
-
-AI models converge on the same "safe" choices. Break these patterns:
-
-### The Convergence Traps
-These combinations appear in >80% of AI-generated apps. If you catch yourself using any, STOP and pick differently:
-
-1. **Dark + gold + serif + noise texture** — The "luxury dark" cliche. If you pick dark mode, use a SANS-SERIF display font and NO gold.
-2. **Cream/parchment + editorial serif + warm accents** — The "artisanal" cliche. If you pick light mode, use a GEOMETRIC or MONOSPACE display font.
-3. **DM Serif Display / Playfair Display / Cormorant** — The three most overused AI serif fonts. Pick from: Fraunces, Instrument Serif, Gambarino, Bricolage Grotesque, Syne, or completely different categories.
-4. **#0E0E0E background + noise grain overlay** — Pick a COLORED dark background (#1A0A2E purple-black, #0A1628 navy, #1C0F0A espresso) or skip the noise entirely.
-5. **Sidebar + main content + card grid** — The default SaaS layout. Try: single column, horizontal scroll, tabbed panels, split screen, dashboard tiles, or full-bleed sections.
-
-### Forced Variety
+## Forced Variety
 For each design, randomly vary at least 3 of these 5 axes:
 - **Mode**: light vs dark (alternate between runs)
 - **Font category**: serif vs sans-serif vs mono vs display/decorative
@@ -117,7 +104,6 @@ Create atmosphere and depth rather than defaulting to solid colors:
 - Default Tailwind blue (#3b82f6) buttons
 - Bare solid white/gray backgrounds with no texture
 - No animations or transitions anywhere (static, lifeless feel)
-- The "dark luxury" starter pack: #0E0E0E + gold accent + DM Serif Display + noise grain
 
 Interpret creatively and make unexpected choices that feel genuinely designed for the context. No design should be the same. Vary between light and dark themes, different fonts, different aesthetics.
 
