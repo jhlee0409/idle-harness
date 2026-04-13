@@ -463,6 +463,16 @@ class Orchestrator:
     def _load_prompt(self, name: str) -> str:
         return _read_file(os.path.join(self.agents_dir, f"{name}.md"))
 
+    def _engineering_skill_prompt(self) -> str:
+        """Instruction block telling Generator to read engineering skills."""
+        backend = os.path.join(self.agents_dir, "backend-engineering-skill.md")
+        frontend = os.path.join(self.agents_dir, "frontend-engineering-skill.md")
+        return (
+            f"Engineering standards (read BEFORE writing any code):\n"
+            f"- Backend patterns: {backend}\n"
+            f"- Frontend patterns: {frontend}\n\n"
+        )
+
     @property
     def planner_prompt(self) -> str:
         if self._planner_prompt is None:
@@ -643,6 +653,7 @@ class Orchestrator:
 
             gen_prompt = (
                 f"Propose a sprint contract for Sprint {sprint.number}: {sprint.name}.\n\n"
+                f"{self._engineering_skill_prompt()}"
                 f"Sprint scope — Features: {', '.join(sprint.features)}. "
                 f"Goal: {sprint.goal}\n\n"
                 f"Product spec: Read from {self.spec_path}\n"
@@ -801,6 +812,7 @@ class Orchestrator:
             criteria_count = _count_criteria(contract)
             prompt = (
                 f"Build the COMPLETE application.\n\n"
+                f"{self._engineering_skill_prompt()}"
                 f"Testable criteria ({criteria_count} criteria — the Evaluator will test EACH ONE):\n{contract}\n\n"
                 f"Product spec (read for visual design language and feature details): "
                 f"Read from {self.spec_path}\n"
@@ -833,6 +845,7 @@ class Orchestrator:
         else:
             prompt = (
                 f"Build Sprint {sprint.number}: {sprint.name}.\n\n"
+                f"{self._engineering_skill_prompt()}"
                 f"Sprint contract:\n{contract}\n\n"
                 f"Product spec: Read from {self.spec_path}\n"
                 f"{eval_context}\n\n"
@@ -859,8 +872,8 @@ class Orchestrator:
                 timeout=CONFIG["agent_timeout_build"],
                 model=resolve_agent_model("generator"),
             )
-        except AgentError:
-            # Reset conversation — crashed session can't be resumed
+        except (AgentError, AgentTimeout):
+            # Reset conversation — crashed/timed-out session can't be resumed
             self._generator_session_id = None
             raise
         # Maintain continuous session across build attempts (per article recommendation)
@@ -1389,7 +1402,7 @@ class Orchestrator:
                 _log("Evaluator", f"{label} — Retry failed.")
 
             # If still no checkboxes, keep previous attempt's detailed eval
-            if _count_criteria(best_eval) == 0:
+            if _count_criteria(best_eval) == 0 and attempt > 1:
                 prev_attempt = attempt - 1
                 prev_path = os.path.join(sprint_dir, f"evaluation_attempt_{prev_attempt}.md")
                 prev_eval = _read_file_optional(prev_path)
@@ -1405,8 +1418,12 @@ class Orchestrator:
         if eval_criteria > 0 and contract_criteria > 0:
             drift = contract_criteria - eval_criteria
             if drift > 5:
+                drift_pct = drift / contract_criteria * 100
                 _log("Harness", f"{label} — ⚠ CRITERIA DRIFT: contract has {contract_criteria} "
-                     f"but eval tested {eval_criteria} ({drift} missing)")
+                     f"but eval tested {eval_criteria} ({drift} missing, {drift_pct:.0f}%)")
+                if drift_pct > 20:
+                    _log("Harness", f"{label} — CRITICAL: Evaluator skipped >{drift_pct:.0f}% "
+                         f"of criteria. Eval results may be unreliable.")
 
         # Write best eval to disk
         with open(eval_path, "w") as f:
@@ -1521,12 +1538,17 @@ class Orchestrator:
         url = CONFIG["dev_server_url"]
         try:
             resp = urllib.request.urlopen(url, timeout=10)
+            status = resp.getcode()
             body = resp.read().decode("utf-8", errors="replace")
         except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
             return False, f"HTTP request failed: {exc}"
 
+        if status != 200:
+            return False, f"HTTP {status} (expected 200)"
         if len(body) < 100:
             return False, f"Response body too small ({len(body)} bytes) — likely blank page"
+        if "<div" not in body.lower() and "<main" not in body.lower():
+            return False, f"Response has no HTML content (missing <div>/<main>)"
 
         return True, "OK"
 
@@ -1602,7 +1624,7 @@ class Orchestrator:
                             f"1. Fix server startup. Error: {exc}\n"
                         )
                     passed = False
-                    consecutive_crashes = 0
+                    consecutive_crashes = 0  # server failure is a build issue, not infra crash
                     continue
 
                 try:
@@ -1835,8 +1857,9 @@ class Orchestrator:
                     best_eval,
                 )
             except AgentTimeout as exc:
-                _log("Harness", f"Integration eval attempt {attempt} TIMEOUT: {exc}")
-                _log("Harness", f"Agent timed out — stopping integration eval.")
+                _log("Harness", f"Integration eval attempt {attempt}/{max_attempts} TIMEOUT: {exc}")
+                _log("Harness", f"Agent timed out — stopping integration eval "
+                     f"(skipping {max_attempts - attempt} remaining attempts).")
                 self.state.set_sprint_result(0, False)
                 return
             except AgentError as exc:
@@ -1886,6 +1909,7 @@ class Orchestrator:
                 fix_start = time.time()
                 fix_prompt = (
                     f"Integration evaluation FAILED. Fix the issues below.\n\n"
+                    f"{self._engineering_skill_prompt()}"
                     f"Evaluation feedback:\n{best_eval}\n\n"
                     f"Product spec: Read from {self.spec_path}\n\n"
                     f"Fix ALL Required Changes listed in the evaluation. "
@@ -2148,6 +2172,7 @@ class Orchestrator:
         prompt = (
             f"Review these testable criteria BEFORE you start building. "
             f"You will be evaluated against each one.\n\n"
+            f"{self._engineering_skill_prompt()}"
             f"Criteria:\n{criteria_text}\n\n"
             f"STEP 1 — Declare your technical architecture:\n"
             f"State your stack choices: CSR vs SSR, framework, database, etc.\n"
@@ -2742,7 +2767,16 @@ def _preflight(force_setup: bool = False):
         print(_fail("auth", hint))
         issues.append(("auth", hint, _fix_auth if has_cli else None))
 
-    # 5. MCP: SDK launches Playwright MCP automatically — just need npx
+    # 5. Config key validation
+    from config import REQUIRED_CONFIG_KEYS
+    missing_keys = [k for k in REQUIRED_CONFIG_KEYS if k not in CONFIG]
+    if missing_keys:
+        print(_fail("config", f"Missing keys: {', '.join(missing_keys)}"))
+        issues.append(("config", f"Missing config keys: {', '.join(missing_keys)}", None))
+    else:
+        print(_ok("config (all required keys present)"))
+
+    # 6. MCP: SDK launches Playwright MCP automatically — just need npx
     npx_result = subprocess.run(["which", "npx"], capture_output=True, text=True)
     if npx_result.returncode == 0:
         print(_ok(f"MCP: {CONFIG['mcp_tool']} (SDK-managed via npx)"))

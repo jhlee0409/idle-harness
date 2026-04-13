@@ -67,6 +67,16 @@ CONFIG = {
 
 CONTRACT_AGREED = "AGREED"
 
+# Keys that orchestrator.py accesses via CONFIG["key"] (crash if missing).
+# Validated at startup by _preflight() to fail early with a clear message.
+REQUIRED_CONFIG_KEYS = [
+    "dev_server_url", "dev_server_startup_wait", "dev_server_health_timeout",
+    "comms_dir", "output_dir", "agent_timeout_planner", "agent_timeout_criteria",
+    "agent_timeout_negotiate", "agent_timeout_build", "agent_timeout_eval",
+    "agent_timeout_integration", "generator_max_turns", "max_build_attempts",
+    "max_negotiation_rounds", "max_design_iterations", "mcp_tool",
+]
+
 TOOLS_READ_WRITE = ["Read", "Write"]
 TOOLS_FULL = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 

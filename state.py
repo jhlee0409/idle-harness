@@ -1,12 +1,14 @@
 import json
 import os
 import tempfile
+import threading
 
 
 class HarnessState:
     def __init__(self, comms_dir: str):
         self.path = os.path.join(comms_dir, "status.json")
         self.comms_dir = comms_dir
+        self._lock = threading.Lock()
 
     def _default_data(self) -> dict:
         return {
@@ -62,9 +64,10 @@ class HarnessState:
             raise
 
     def set_phase(self, phase: str):
-        data = self.load()
-        data["phase"] = phase
-        self._save(data)
+        with self._lock:
+            data = self.load()
+            data["phase"] = phase
+            self._save(data)
 
     def _ensure_sprint_entry(self, data: dict, sprint_num: int) -> dict:
         key = str(sprint_num)
@@ -74,10 +77,11 @@ class HarnessState:
         return attempts[key]
 
     def increment(self, sprint_num: int, phase: str):
-        data = self.load()
-        entry = self._ensure_sprint_entry(data, sprint_num)
-        entry[phase] += 1
-        self._save(data)
+        with self._lock:
+            data = self.load()
+            entry = self._ensure_sprint_entry(data, sprint_num)
+            entry[phase] += 1
+            self._save(data)
 
     def get_sprint_attempt(self, sprint_num: int, phase: str) -> int:
         data = self.load()
@@ -93,19 +97,21 @@ class HarnessState:
         )
 
     def add_cost_usd(self, amount: float, label: str = ""):
-        data = self.load()
-        cost = data.setdefault("cost", {"total_usd": 0.0, "by_phase": {}})
-        cost["total_usd"] = cost.get("total_usd", 0.0) + amount
-        if label:
-            by_phase = cost.setdefault("by_phase", {})
-            by_phase[label] = by_phase.get(label, 0.0) + amount
-        self._save(data)
+        with self._lock:
+            data = self.load()
+            cost = data.setdefault("cost", {"total_usd": 0.0, "by_phase": {}})
+            cost["total_usd"] = cost.get("total_usd", 0.0) + amount
+            if label:
+                by_phase = cost.setdefault("by_phase", {})
+                by_phase[label] = by_phase.get(label, 0.0) + amount
+            self._save(data)
 
     def set_sprint_result(self, sprint_num: int, passed: bool):
-        data = self.load()
-        results = data.setdefault("sprint_results", {})
-        results[str(sprint_num)] = passed
-        self._save(data)
+        with self._lock:
+            data = self.load()
+            results = data.setdefault("sprint_results", {})
+            results[str(sprint_num)] = passed
+            self._save(data)
 
     def get_sprint_results(self, data: dict | None = None) -> dict[int, bool]:
         if data is None:
@@ -116,29 +122,32 @@ class HarnessState:
         }
 
     def set_sprint_info(self, current: int, total: int):
-        data = self.load()
-        data["current_sprint"] = current
-        data["total_sprints"] = total
-        self._save(data)
+        with self._lock:
+            data = self.load()
+            data["current_sprint"] = current
+            data["total_sprints"] = total
+            self._save(data)
 
     def record_plan_time(self, seconds: int):
-        data = self.load()
-        data["timings"]["plan"] = seconds
-        self._save(data)
+        with self._lock:
+            data = self.load()
+            data["timings"]["plan"] = seconds
+            self._save(data)
 
     def add_eval_score(self, sprint_num: int, attempt: int, passed: int, total: int):
         """Record eval score for regression detection."""
-        data = self.load()
-        scores = data.setdefault("eval_scores", [])
-        pct = int(passed / total * 100) if total > 0 else 0
-        scores.append({
-            "sprint": sprint_num,
-            "attempt": attempt,
-            "passed": passed,
-            "total": total,
-            "pct": pct,
-        })
-        self._save(data)
+        with self._lock:
+            data = self.load()
+            scores = data.setdefault("eval_scores", [])
+            pct = int(passed / total * 100) if total > 0 else 0
+            scores.append({
+                "sprint": sprint_num,
+                "attempt": attempt,
+                "passed": passed,
+                "total": total,
+                "pct": pct,
+            })
+            self._save(data)
 
     def get_eval_scores(self, sprint_num: int | None = None) -> list[dict]:
         """Get eval score history, optionally filtered by sprint."""
@@ -154,23 +163,24 @@ class HarnessState:
         return scores[-1] if scores else None
 
     def add_sprint_timing(self, sprint_num: int, phase: str, seconds: int):
-        data = self.load()
-        sprints = data["timings"]["sprints"]
+        with self._lock:
+            data = self.load()
+            sprints = data["timings"]["sprints"]
 
-        entry = None
-        for s in sprints:
-            if s["sprint"] == sprint_num:
-                entry = s
-                break
-        if entry is None:
-            entry = {"sprint": sprint_num}
-            sprints.append(entry)
+            entry = None
+            for s in sprints:
+                if s["sprint"] == sprint_num:
+                    entry = s
+                    break
+            if entry is None:
+                entry = {"sprint": sprint_num}
+                sprints.append(entry)
 
-        if phase == "negotiate":
-            entry["negotiate"] = seconds
-        else:
-            if phase not in entry:
-                entry[phase] = []
-            entry[phase].append(seconds)
+            if phase == "negotiate":
+                entry["negotiate"] = seconds
+            else:
+                if phase not in entry:
+                    entry[phase] = []
+                entry[phase].append(seconds)
 
-        self._save(data)
+            self._save(data)
