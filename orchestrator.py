@@ -1,5 +1,6 @@
 import asyncio
 import anyio
+import json
 import os
 import re
 import signal
@@ -557,6 +558,7 @@ class Orchestrator:
             f"Then generate a complete product specification. "
             f"Write the spec to {self.spec_path} using the Write tool."
         )
+        _save_agent_prompt(self.comms_dir, "prompt_planner.md", self.planner_prompt, prompt)
         agent_result = await call_agent(
             system_prompt=self.planner_prompt,
             user_prompt=prompt,
@@ -580,6 +582,8 @@ class Orchestrator:
         self.state.set_sprint_info(current=0, total=len(self.sprints))
         self.state.set_phase("building")
         _log("Planner", f"Spec generated — {len(self.sprints)} sprint(s). ({_fmt_stats(agent_result, start)})")
+        _log_event("plan_complete", sprints=len(self.sprints), elapsed_s=elapsed,
+                   cost_usd=getattr(agent_result, "cost_usd", 0))
         _print_spec_summary(self.spec, self.sprints)
 
     async def generate_criteria(self) -> str:
@@ -603,6 +607,7 @@ class Orchestrator:
             f"Ignore the '## Sprints' section — generate criteria for ALL features as one unit.\n\n"
             f"Write the criteria to {criteria_path} using the Write tool."
         )
+        _save_agent_prompt(self.comms_dir, "prompt_criteria.md", self.evaluator_prompt, prompt)
         agent_result = await call_agent(
             system_prompt=self.evaluator_prompt,
             user_prompt=prompt,
@@ -632,6 +637,9 @@ class Orchestrator:
                  f"Higher count increases eval cost and makes 100% PASS harder to achieve.")
         _log("Harness", f"Criteria count: {criteria_count}")
         _log("Evaluator", f"Generated {criteria_count} testable criteria. ({_fmt_stats(agent_result, start)})")
+        _log_event("criteria_complete", criteria_count=criteria_count,
+                   elapsed_s=int(time.time() - start),
+                   cost_usd=getattr(agent_result, "cost_usd", 0))
         # Save criteria generation response for analysis
         _save_agent_response(self.comms_dir, "criteria_response.md", agent_result.result)
         return criteria_path
@@ -806,6 +814,7 @@ class Orchestrator:
         label = self._sprint_label(sprint)
         is_simple = sprint.name == "Full Build"
         _log("Generator", f"{label} — Building (attempt {attempt})...")
+        _log_event("build_start", sprint=sprint.number, attempt=attempt)
         start = time.time()
 
         if is_simple:
@@ -861,6 +870,9 @@ class Orchestrator:
                 f"'Self-eval pass rate: X/Y (Z%)'. If <90%, keep building."
             )
 
+        sprint_dir = self._sprint_dir(sprint)
+        _save_agent_prompt(sprint_dir, f"prompt_build_{attempt}.md",
+                           self.generator_prompt, prompt)
         try:
             agent_result = await call_agent(
                 system_prompt=self.generator_prompt,
@@ -872,9 +884,11 @@ class Orchestrator:
                 timeout=CONFIG["agent_timeout_build"],
                 model=resolve_agent_model("generator"),
             )
-        except (AgentError, AgentTimeout):
+        except (AgentError, AgentTimeout) as exc:
             # Reset conversation — crashed/timed-out session can't be resumed
             self._generator_session_id = None
+            _log_event("build_error", sprint=sprint.number, attempt=attempt,
+                       error_type=type(exc).__name__, error=str(exc))
             raise
         # Maintain continuous session across build attempts (per article recommendation)
         if agent_result.session_id:
@@ -883,6 +897,9 @@ class Orchestrator:
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "build", elapsed)
         _log("Generator", f"{label} — Build complete. ({_fmt_stats(agent_result, start)})")
+        _log_event("build_complete", sprint=sprint.number, attempt=attempt,
+                   elapsed_s=elapsed, turns=agent_result.turns,
+                   cost_usd=getattr(agent_result, "cost_usd", 0))
         _print_build_summary(self.output_dir)
         # Save Generator response for post-run analysis
         attempt = self.state.get_sprint_attempt(sprint.number, "build")
@@ -1354,6 +1371,8 @@ class Orchestrator:
                     f"{prev_eval_section}"
                 )
 
+            _save_agent_prompt(sprint_dir, f"prompt_eval_{attempt}.md",
+                               self.evaluator_prompt, prompt)
             eval_result = await call_agent(
                 system_prompt=self.evaluator_prompt,
                 user_prompt=prompt,
@@ -1474,6 +1493,20 @@ class Orchestrator:
             pct = int(eval_passed / eval_total * 100)
             self.state.add_eval_score(sprint.number, attempt, eval_passed, eval_total)
             _log("Evaluator", f"{label} — Score: {eval_passed}/{eval_total} ({pct}%)")
+            _log_event("eval_complete", sprint=sprint.number, attempt=attempt,
+                       passed=eval_passed, total=eval_total, pct=pct,
+                       verdict="pass" if passed else "fail",
+                       elapsed_s=elapsed,
+                       cost_usd=getattr(final_result, "cost_usd", 0))
+
+        # Track failed criteria for cross-attempt analysis
+        failed_lines = re.findall(r"^\s*- \[ \] (.+)$", best_eval, re.MULTILINE)
+        if failed_lines:
+            prev_details = [d for d in self.state.load().get("eval_details", [])
+                            if d["sprint"] == sprint.number]
+            prev_failed = set(prev_details[-1]["failed_criteria"]) if prev_details else set()
+            persistent = [f for f in failed_lines if f in prev_failed]
+            self.state.add_eval_details(sprint.number, attempt, failed_lines, persistent)
 
         return passed
 
@@ -1581,6 +1614,8 @@ class Orchestrator:
             _log("Harness", f"{label} — REGRESSION DETECTED: score dropped from best "
                  f"{best_pct}% to {current['pct']}% (Δ{drop_from_best}pp). "
                  f"Resetting Generator session to clear stale context.")
+            _log_event("regression", sprint=sprint.number,
+                       from_pct=best_pct, to_pct=current["pct"], action="session_reset")
             self._generator_session_id = None
             return
 
@@ -1591,6 +1626,9 @@ class Orchestrator:
                 _log("Harness", f"{label} — DOWNWARD TREND: "
                      f"{prev_prev['pct']}% → {previous['pct']}% → {current['pct']}%. "
                      f"Resetting Generator session.")
+                _log_event("regression", sprint=sprint.number,
+                           from_pct=prev_prev["pct"], to_pct=current["pct"],
+                           action="session_reset", reason="downward_trend")
                 self._generator_session_id = None
 
     async def _retry_build_eval(self, sprint: Sprint, contract_path: str, label: str):
@@ -1630,6 +1668,8 @@ class Orchestrator:
                 try:
                     # Smoke test with server already running
                     smoke_ok, smoke_msg = await self._smoke_test()
+                    _log_event("smoke_test", result="pass" if smoke_ok else "fail",
+                               message=smoke_msg)
                     if not smoke_ok:
                         _log("Harness", f"{label} — SMOKE TEST FAIL: {smoke_msg}")
                         _log("Harness", f"{label} — Skipping Evaluator (app not functional)")
@@ -1705,6 +1745,18 @@ class Orchestrator:
             _log("Harness", f"Mode: {self._mode} (generator: {gen_model}, evaluator: {eval_model}, planner: {plan_model})")
 
         self.setup()
+
+        # Record run metadata for post-run analysis
+        models = {"generator": gen_model, "evaluator": eval_model, "planner": plan_model}
+        self.state.set_run_meta({
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "user_prompt": user_prompt,
+            "mode": self._mode,
+            "models": models,
+            "config": {k: v for k, v in CONFIG.items() if not isinstance(v, dict)},
+        })
+        _log_event("run_start", mode=self._mode, models=models)
+
         try:
             await self.plan(user_prompt)
 
@@ -1714,9 +1766,14 @@ class Orchestrator:
                 await self._run_full()
         except UserAbort:
             _log("Harness", "Aborted by user.")
+            _log_event("run_abort", reason="user")
         except (AgentError, RuntimeError) as exc:
             _log("Harness", f"Fatal error: {exc}")
+            _log_event("run_error", error=str(exc))
         finally:
+            total_elapsed = int(time.time() - total_start)
+            total_cost = self.state.load().get("cost", {}).get("total_usd", 0)
+            _log_event("run_complete", elapsed_s=total_elapsed, cost_usd=total_cost)
             self.state.set_phase("completed")
             if self.output_dir:
                 self._print_report(total_start)
@@ -2189,6 +2246,8 @@ class Orchestrator:
             f"Write ACKNOWLEDGED to confirm you understand the full scope.\n\n"
             f"Do NOT start building yet. Just review and acknowledge."
         )
+        _save_agent_prompt(self.comms_dir, "prompt_criteria_review.md",
+                           self.generator_prompt, prompt)
 
         try:
             result = await call_agent(
@@ -2541,6 +2600,7 @@ _log_file = None
 def _log_init(path: str):
     global _log_file
     _log_file = open(path, "a")
+    _jsonl_init(path.replace(".log", ".jsonl"))
 
 
 def _log_close():
@@ -2548,6 +2608,7 @@ def _log_close():
     if _log_file:
         _log_file.close()
         _log_file = None
+    _jsonl_close()
 
 
 def _log(agent: str, msg: str):
@@ -2559,6 +2620,31 @@ def _log(agent: str, msg: str):
         clean = re.sub(r"\033\[[0-9;]*m", "", msg)
         _log_file.write(f"[{ts}] [{agent}] {clean}\n")
         _log_file.flush()
+
+
+# --- Structured event log (JSONL) for machine analysis ---
+_jsonl_file = None
+
+
+def _jsonl_init(path: str):
+    global _jsonl_file
+    _jsonl_file = open(path, "a")
+
+
+def _jsonl_close():
+    global _jsonl_file
+    if _jsonl_file:
+        _jsonl_file.close()
+        _jsonl_file = None
+
+
+def _log_event(event: str, **kwargs):
+    """Write a structured event to harness.jsonl for post-run analysis."""
+    if _jsonl_file:
+        entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                 "event": event, **kwargs}
+        _jsonl_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        _jsonl_file.flush()
 
 
 def _cleanup_playwright():
@@ -2580,6 +2666,14 @@ def _save_agent_response(directory: str, filename: str, text: str):
     with open(path, "w") as f:
         f.write(text)
     _log("Harness", f"Agent response saved to {os.path.relpath(path)}")
+
+
+def _save_agent_prompt(directory: str, filename: str, system_prompt: str, user_prompt: str):
+    """Save agent prompt (system + user) for post-run analysis."""
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, filename)
+    with open(path, "w") as f:
+        f.write(f"# System Prompt\n\n{system_prompt}\n\n---\n\n# User Prompt\n\n{user_prompt}")
 
 
 def _elapsed(start: float) -> str:

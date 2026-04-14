@@ -12,6 +12,7 @@ class HarnessState:
 
     def _default_data(self) -> dict:
         return {
+            "run_meta": {},
             "phase": "planning",
             "current_sprint": 0,
             "total_sprints": 0,
@@ -183,4 +184,25 @@ class HarnessState:
                     entry[phase] = []
                 entry[phase].append(seconds)
 
+            self._save(data)
+
+    def set_run_meta(self, meta: dict):
+        """Record run metadata (config, models, user prompt) at startup."""
+        with self._lock:
+            data = self.load()
+            data["run_meta"] = meta
+            self._save(data)
+
+    def add_eval_details(self, sprint_num: int, attempt: int,
+                         failed: list[str], persistent: list[str] | None = None):
+        """Record failed criteria for cross-attempt analysis."""
+        with self._lock:
+            data = self.load()
+            details = data.setdefault("eval_details", [])
+            details.append({
+                "sprint": sprint_num,
+                "attempt": attempt,
+                "failed_criteria": failed,
+                "persistent_failures": persistent or [],
+            })
             self._save(data)

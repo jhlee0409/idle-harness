@@ -40,9 +40,10 @@ Every `- [x]` line in your evaluation MUST end with `| screenshots/filename.png`
 
 **If you cannot screenshot it, you cannot PASS it:**
 - Loading states: Use `browser_evaluate` to intercept fetch and add `await new Promise(r => setTimeout(r, 3000))` delay, THEN take a screenshot of the skeleton/spinner. If skeletons resolve too fast to see, artificially slow the API.
-- Animations: Take screenshots before and after the trigger. Or describe frame-by-frame what you observe on screen.
-- Hover effects: Use `browser_hover` then immediately screenshot.
+- Animations: Describe frame-by-frame what you observe after reload. "CSS values exist" is NOT proof. You must observe the visual transition.
+- Hover effects: Use `browser_hover` then immediately screenshot. Then hover a DIFFERENT point and screenshot again — verify content changes. Then move away and verify dismissal. Single-point hover is NOT sufficient for tooltips/charts.
 - Sticky elements: Scroll down and screenshot — the sticky element should be visible at both scroll positions.
+- Spatial correctness: Use `browser_evaluate` with `getBoundingClientRect()` to verify element positions relative to their triggers. A tooltip that renders outside its parent chart area is BROKEN even if visible.
 
 **Untested features block PASS verdicts:**
 - If ANY feature category has untested criteria (e.g., AI features "cannot be tested"), the corresponding quality dimension (Product Depth, Functionality) is automatically FAIL.
@@ -81,6 +82,107 @@ Do not stop at the happy path. For every feature:
 7. Test error recovery (if an action fails, can the user recover?)
 
 A feature that works on the happy path but breaks on empty input is a FAIL.
+
+## Interaction Quality Testing
+
+Beyond "does it work?", verify "does it work CORRECTLY?" Button clicks and form inputs are straightforward. Hover, animation, drag, toast, and scroll interactions require deeper verification because they involve position, timing, and continuous state.
+
+### Hover/Tooltip Interactions (Spatial + Content Verification)
+For any hover-triggered UI (tooltips, reveals, highlights), test the full interaction cycle:
+1. **Before hover**: verify tooltip is NOT in DOM or is hidden
+2. **Hover point A**: verify tooltip appears, then check position via `browser_evaluate`:
+   ```js
+   const chart = document.querySelector('.recharts-wrapper').getBoundingClientRect();
+   const tip = document.querySelector('.recharts-tooltip-wrapper').getBoundingClientRect();
+   return {
+     inside: tip.x >= chart.x && tip.x <= chart.x + chart.width
+          && tip.y >= chart.y && tip.y <= chart.y + chart.height,
+     tipContent: document.querySelector('.recharts-tooltip-wrapper')?.textContent
+   };
+   ```
+3. **Hover point B** (different data point): verify tooltip content CHANGES — read text before and after, they must differ
+4. **Leave element**: move cursor outside, verify tooltip removed from DOM or hidden
+
+**"Tooltip appears" without 2-point content comparison = FAIL.** A tooltip showing static/hardcoded text passes single-point check but fails real usage.
+
+### Animation Verification (Observable Intermediate State)
+CSS values alone do NOT prove animation is visible. Prove animation by capturing an **intermediate state** where the animated property is between its start and end values:
+
+```js
+// Verify animation is actually running (not instant) by catching mid-transition
+await browser_evaluate(`
+  const card = document.querySelector('.card');
+  const style = getComputedStyle(card);
+  const opacity = parseFloat(style.opacity);
+  return { opacity, isAnimating: opacity > 0 && opacity < 1 };
+`);
+// isAnimating: true → animation is real. isAnimating: false → instant render, no visible animation.
+```
+
+For stagger animations, verify **sequential appearance**:
+```js
+// Check that cards have different computed states at the same moment
+const cards = document.querySelectorAll('.card');
+const states = [...cards].map(c => parseFloat(getComputedStyle(c).opacity));
+const allSame = states.every(s => s === states[0]);
+return { states, isStaggered: !allSame };
+// isStaggered: true → cards are at different animation stages = real stagger
+```
+
+**"CSS has animation-delay values" as sole evidence = FAIL.** CSS can exist but be overridden, instant, or applied to wrong elements.
+
+### Temporal Behavior (Toast, Auto-dismiss, Timed UI)
+For any UI element that appears and disappears on a timer, do NOT rely on screenshots. Use DOM observation:
+
+```js
+// 1. Trigger the toast (e.g., submit a form)
+// 2. Verify toast appears
+await browser_evaluate(`!!document.querySelector('.toast')`);  // → true
+// 3. Wait for auto-dismiss — verify element is removed from DOM
+await browser_evaluate(`
+  new Promise(resolve => {
+    const check = () => {
+      if (!document.querySelector('.toast')) return resolve({ dismissed: true });
+      setTimeout(check, 200);
+    };
+    setTimeout(check, 200);
+    setTimeout(() => resolve({ dismissed: false }), 6000); // 6s timeout
+  });
+`);
+// dismissed: true within 6s → toast auto-dismiss works
+// dismissed: false → toast persists indefinitely = FAIL
+```
+
+For stacking prevention, trigger 3 rapid toasts and count visible:
+```js
+// After 3 rapid actions that each show a toast:
+const count = document.querySelectorAll('.toast').length;
+return { count, stacking: count > 2 }; // >2 visible = stacking problem
+```
+
+**Never write criteria that require exact timing ("dismisses in 3.0 seconds").** Instead write: "toast is removed from DOM within 5 seconds without user interaction."
+
+### Responsive Interaction Verification
+After resizing to 375px, don't just screenshot — INTERACT:
+1. Tap each navigation button — does it actually navigate?
+2. Fill and submit a form at mobile width — does it work?
+3. Verify touch targets are >= 44px tall via `browser_evaluate`:
+   ```js
+   const buttons = document.querySelectorAll('button, a, [role="button"]');
+   const tooSmall = [...buttons].filter(b => b.getBoundingClientRect().height < 44);
+   return tooSmall.map(b => ({ text: b.textContent.trim(), height: b.getBoundingClientRect().height }));
+   ```
+
+**"No horizontal scrollbar" without interaction testing = incomplete.** A layout can look correct but buttons can be dead.
+
+### Error State Recovery
+For every error state tested:
+1. **Trigger** the error (intercept API, return 500)
+2. **Screenshot** the error UI
+3. **Click retry/dismiss** — verify the app recovers to normal state
+4. If clicking retry shows the error AGAIN (API still intercepted), restore the original fetch and retry — verify recovery works
+
+**Error state without recovery path = FAIL.** An error message with no retry button is a dead end.
 
 ## Production Readiness Testing
 
@@ -363,12 +465,31 @@ When asked to generate testable criteria from a product spec, create a comprehen
 5. **Include persistence.** At least one criterion per data feature verifying "data survives page refresh."
 6. **Include visual design.** Extract specific design requirements from the spec's Visual Design Language section: exact hex colors, font names, layout style (masonry vs grid), animation behavior, texture/noise presence.
 7. **Include interactivity depth.** For drag-and-drop: "dragging clip from position A to position B visually moves the clip, and after drop, the clip stays at position B." For knobs/sliders: "rotating knob changes the displayed value and affects the audio output."
+7b. **Interaction Contract format (MANDATORY for hover, animation, drag, scroll).** Continuous interactions require 5 properties. Do NOT write "tooltip appears" — specify the full contract:
+   - **Trigger**: what user action initiates it ("hovering over SVG data point", NOT "hovering over chart area")
+   - **Response**: what appears ("tooltip with timestamp, value, status")
+   - **Position**: where it appears relative to trigger ("at cursor position within chart bounds")
+   - **Content update**: what happens on continued interaction ("moving to adjacent point updates tooltip content")
+   - **Dismissal**: how it ends ("cursor leaving chart area dismisses tooltip within 500ms")
+
+   **BAD:** "Hovering over chart displays tooltip"
+   **GOOD:** "Hovering over an SVG data point (not chart background) displays tooltip at cursor position showing that point's timestamp and value. Moving to a different data point updates tooltip content. Leaving chart area dismisses tooltip."
+
+   **BAD:** "Cards appear with stagger animation"
+   **GOOD:** "On page load, cards fade in sequentially with visible delay between each (~80ms). First card appears immediately, last card appears ~500ms later. Verify visually — all cards appearing simultaneously = FAIL."
+
+   **BAD:** "At 375px, bottom navigation is visible"
+   **GOOD:** "At 375px, bottom navigation bar has 4 tappable tabs (44px+ touch targets). Tapping each tab navigates to the correct page without page reload."
 8. **Automation-safe with test hints.** Every criterion must be testable. For non-obvious interactions, include a test approach hint in parentheses:
    - Drag/move: "Element is draggable to new position (test: dispatchEvent pointerdown/pointermove/pointerup, verify position changed via API or getBoundingClientRect)"
    - Real-time sync: "Changes in Tab A appear in Tab B (test: modify via API in one context, verify DOM update in another)"
    - Loading states: "Skeleton visible during load (test: intercept fetch with 3s delay, screenshot during delay)"
    - Z-order: "Bring Forward moves element above others (test: create overlap, call reorder API, check DOM order)"
+   - Toast auto-dismiss: "Toast is removed from DOM within 5 seconds without user interaction (test: trigger toast, poll DOM with setTimeout loop, verify element removed within 5s)"
+   - Animation visible: "Cards fade in with intermediate opacity observable (test: waitForFunction checking 0 < getComputedStyle(card).opacity < 1 during transition)"
+   - Hover content update: "Tooltip content changes when hovering different data points (test: hover point A → read text, hover point B → read text, verify A ≠ B)"
    Flag any that require OS-level dialogs and provide API-based alternatives.
+   **NEVER write criteria requiring exact timing** ("dismisses in 3.0 seconds"). Write DOM-observable conditions instead ("removed from DOM within 5 seconds").
 9. **Include production readiness criteria.** EVERY feature set must include these categories. They are not optional extras — they define the difference between a demo and a deployable product:
 
 **Responsive design (MANDATORY — include for every app):**
