@@ -586,14 +586,44 @@ class Orchestrator:
                    cost_usd=getattr(agent_result, "cost_usd", 0))
         _print_spec_summary(self.spec, self.sprints)
 
+    def _find_golden_criteria(self, user_prompt: str) -> str | None:
+        """Look for a golden dataset matching this prompt's slug.
+
+        Returns the criteria file path if found, None otherwise.
+        """
+        golden_dir = os.path.join(self.root, "golden_datasets")
+        if not os.path.isdir(golden_dir):
+            return None
+
+        slug = _slug_from_spec(self.spec)
+        dataset_dir = os.path.join(golden_dir, slug)
+        criteria_path = os.path.join(dataset_dir, "criteria.md")
+        if os.path.exists(criteria_path):
+            return criteria_path
+        return None
+
     async def generate_criteria(self) -> str:
         """Generate testable criteria from spec (simple mode).
 
         The Evaluator extracts concrete, interaction-level test criteria from the
         high-level spec. This replaces contract negotiation in simple mode and
         ensures Generator builds to sufficient depth.
+
+        If a golden dataset exists for this slug, reuses it for benchmark
+        reproducibility (set CONFIG["use_golden_dataset"] = True).
         """
         criteria_path = os.path.join(self.comms_dir, "testable_criteria.md")
+
+        # Golden dataset reuse for benchmarking
+        if CONFIG.get("use_golden_dataset", False):
+            golden_path = self._find_golden_criteria("")
+            if golden_path:
+                shutil.copy2(golden_path, criteria_path)
+                criteria_text = _read_file(criteria_path)
+                criteria_count = _count_criteria(criteria_text)
+                _log("Harness", f"Using golden dataset criteria ({criteria_count} criteria)")
+                return criteria_path
+
         _log("Evaluator", "Generating testable criteria from spec...")
         start = time.time()
 
@@ -793,10 +823,18 @@ class Orchestrator:
                             f"curl output or build results. Use [?] for everything else."
                         )
 
+            # Include verifier feedback if available
+            verifier_section = ""
+            vfeedback_path = os.path.join(sprint_dir, "verifier_feedback.md")
+            vfeedback = _read_file_optional(vfeedback_path)
+            if vfeedback:
+                verifier_section = f"\n\n{vfeedback}"
+
             eval_context = (
                 f"\n\nPrevious evaluation feedback:\n{eval_context}\n\n"
                 f"{score_trajectory}"
-                f"{discrepancy_section}\n\n"
+                f"{discrepancy_section}"
+                f"{verifier_section}\n\n"
                 f"MANDATORY FIRST LINE of your response must be your strategic decision:\n"
                 f"'STRATEGY: REFINE — [reason]' or 'STRATEGY: PIVOT — [reason]'\n\n"
                 f"**REFINE** if score is improving and failures are specific, fixable issues.\n"
@@ -1690,6 +1728,11 @@ class Orchestrator:
                         vresult = await self.verify(sprint, contract_path)
                         if vresult is not None and not vresult.overall_pass:
                             _log("Harness", f"{label} — Verifier found {len(vresult.failed)} issue(s) (advisory, proceeding to Evaluator)")
+                            # Append verifier feedback to evaluation for Generator
+                            sprint_dir = self._sprint_dir(sprint)
+                            vfeedback_path = os.path.join(sprint_dir, "verifier_feedback.md")
+                            with open(vfeedback_path, "w") as f:
+                                f.write(vresult.feedback_text())
                         # Verifier is advisory — always proceed to Evaluator.
                         passed = await self.evaluate(sprint, contract_path)
                         consecutive_crashes = 0
@@ -2006,7 +2049,11 @@ class Orchestrator:
         _ask_user_continue("Integration evaluation")
 
     def _archive_comms(self):
-        """Copy comms/ artifacts into output/{slug}/.harness/ for project-level persistence."""
+        """Copy comms/ artifacts into output/{slug}/.harness/ for project-level persistence.
+
+        If the run passed, also archives criteria to golden_datasets/ for
+        benchmark reproducibility.
+        """
         if not self.output_dir:
             return
         archive_dir = os.path.join(self.output_dir, ".harness")
@@ -2014,6 +2061,44 @@ class Orchestrator:
             shutil.rmtree(archive_dir)
         shutil.copytree(self.comms_dir, archive_dir)
         _log("Harness", f"Build artifacts archived to {os.path.relpath(archive_dir)}")
+
+        # Golden dataset: archive criteria from PASS builds
+        sprint_results = self.state.get_sprint_results()
+        all_passed = all(sprint_results.values()) if sprint_results else False
+        if all_passed:
+            self._archive_golden_dataset()
+
+    def _archive_golden_dataset(self):
+        """Archive criteria + spec as golden dataset for benchmark reuse."""
+        golden_dir = os.path.join(self.root, "golden_datasets")
+        os.makedirs(golden_dir, exist_ok=True)
+
+        slug = os.path.basename(self.output_dir)
+        dataset_dir = os.path.join(golden_dir, slug)
+        os.makedirs(dataset_dir, exist_ok=True)
+
+        # Copy criteria
+        criteria_path = os.path.join(self.comms_dir, "testable_criteria.md")
+        if os.path.exists(criteria_path):
+            shutil.copy2(criteria_path, os.path.join(dataset_dir, "criteria.md"))
+
+        # Copy spec
+        if os.path.exists(self.spec_path):
+            shutil.copy2(self.spec_path, os.path.join(dataset_dir, "spec.md"))
+
+        # Save metadata
+        status = self.state.load()
+        meta = {
+            "slug": slug,
+            "archived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "run_meta": status.get("run_meta", {}),
+            "final_score": status.get("eval_scores", [{}])[-1] if status.get("eval_scores") else {},
+            "cost_usd": status.get("cost", {}).get("total_usd", 0.0),
+        }
+        with open(os.path.join(dataset_dir, "metadata.json"), "w") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+
+        _log("Harness", f"Golden dataset archived to {os.path.relpath(dataset_dir)}")
 
     async def _design_refinement(self, sprint: Sprint, contract_path: str):
         """Design-focused iteration loop (per article: 5-15 iterations for frontend design).
@@ -2340,7 +2425,7 @@ class Orchestrator:
 
             print(f"  {label:14s} {icon}{timing_str}")
 
-        # Cost
+        # Cost + CNA
         cost = status.get("cost", {})
         total_usd = cost.get("total_usd", 0)
         if total_usd > 0:
@@ -2349,6 +2434,11 @@ class Orchestrator:
             if by_phase:
                 for phase, phase_usd in sorted(by_phase.items()):
                     print(f"    {phase:16s} ${phase_usd:.2f}")
+
+        # Efficiency metrics (CNA)
+        efficiency = self.state.get_run_efficiency()
+        if efficiency["cost_usd"] > 0 and efficiency["score_pct"] > 0:
+            print(f"  CNA:            {efficiency['cna']:.1f} (score/cost*100)")
 
         print(f"  Total time:     {_elapsed(total_start)}")
         print("=" * 60)

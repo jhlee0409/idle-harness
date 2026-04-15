@@ -23,6 +23,11 @@ python orchestrator.py serve          # Start last-built app
 python orchestrator.py clean          # Clean comms/ staging
 python orchestrator.py clean --all    # Clean comms/ + output/
 python orchestrator.py --setup        # Interactive dependency setup
+
+# Benchmark
+python benchmark.py report results/              # View benchmark report
+python benchmark.py collect output/ "prompt" results/  # Collect results from runs
+python benchmark.py compare results_v1/ results_v2/   # Compare two benchmark runs
 ```
 
 ## Architecture
@@ -78,6 +83,10 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 - **Generator writes self_eval.md** — Three-tier self-evaluation: `[x]` verified (curl/build confirmed), `[?]` unverified (implemented but needs Playwright), `[ ]` not implemented. Orchestrator detects discrepancy if verified % exceeds Evaluator by >10pp.
 - **Automation-limited feedback loop** — Items the evaluator couldn't test are extracted and passed back to the generator on retry with explicit self-test instructions.
 - **Criteria generation bounds** — Minimum 10 (raises RuntimeError if fewer). Recommended max 100 (warns if exceeded). Higher counts increase eval cost and make 100% PASS harder. Criteria count drift between contract and eval is detected and logged.
+- **Golden dataset archiving** — When a run passes, criteria + spec are archived to `golden_datasets/{slug}/`. Set `use_golden_dataset: True` in config to reuse for reproducible benchmarks. Prevents criteria drift between comparison runs.
+- **CNA (Cost-Normalized Accuracy)** — `score_pct / cost_usd * 100`. Printed in final report. Higher is better. Prevents optimizing accuracy by burning tokens.
+- **Pass@k / Pass^k metrics** — `benchmark.py` computes both: Pass@k (at least 1 of k correct → capability ceiling) and Pass^k (all k correct → operational reliability). Used for data-driven evaluation of harness changes.
+- **Verifier feeds back to Generator** — When verifier finds failures, `verifier_feedback.md` is written and included in Generator's build prompt on retry, alongside Evaluator feedback.
 - **Evaluator gets spec in simple mode** — Product spec (with Visual Design Language) is passed inline alongside testable criteria so evaluator can assess design quality against the original design direction.
 - **Contract is cached in memory** — `_cached_contracts` dict initialized in `__init__`, caches contract text on first read to prevent generator from modifying criteria between retries (GAN integrity).
 - **Design refinement includes contract** — Generator receives testable criteria during design refinement so it knows which specific frontend criteria the Evaluator will re-test.
@@ -89,7 +98,8 @@ orchestrator.py  →  call_agent() in cli.py  →  Claude Agent SDK  →  claude
 - `config.py` — `CONFIG` dict, tool lists (`TOOLS_READ_WRITE`, `TOOLS_FULL`, `TOOLS_EVALUATOR`), `CONTRACT_AGREED` constant
 - `state.py` — `HarnessState` persists to `comms/status.json`. Per-sprint attempt counters, USD cost tracking (per-phase breakdown), sprint results, eval score history (`add_eval_score`, `get_eval_scores`, `get_last_eval_score`). Token counts removed — SDK only reliably provides `cost_usd`.
 - `server.py` — `DevServer` auto-detects project structure, manages subprocess lifecycle with process groups (`os.setsid`), health-checks via HTTP polling.
-- `verifier.py` — Deterministic pre-eval verifier. Classifies criteria into typed checks (API, CSS, responsive, build, etc.) and runs them before the LLM Evaluator. Advisory only — does not block Evaluator on failure. Currently disabled (`verifier_enabled: False` in config.py).
+- `benchmark.py` — Pass@k/Pass^k reliability metrics + CNA (Cost-Normalized Accuracy). Collects results from harness runs, computes statistical reliability measures, generates comparison reports.
+- `verifier.py` — Deterministic pre-eval verifier. Classifies criteria into typed checks (API, CSS, responsive, build, etc.) and runs them before the LLM Evaluator. Advisory only — does not block Evaluator on failure. Enabled by default (`verifier_enabled: True` in config.py).
 - `sprint.py` — `Sprint` dataclass + `parse_sprints()` parser for the `## Sprints` section of specs. Used in full mode for sprint decomposition.
 - `agents/*.md` — System prompts. Planner reads `frontend-design-skill.md` at runtime via Read tool.
 

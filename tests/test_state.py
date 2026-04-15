@@ -142,3 +142,47 @@ def test_record_sprint_timing():
         assert sprint_timing["negotiate"] == 45
         assert sprint_timing["build"] == [320, 180]
         assert sprint_timing["eval"] == [60]
+
+
+def test_get_cna_basic():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = HarnessState(tmpdir)
+        state.init()
+        state.add_cost_usd(10.0, "build")
+        state.add_eval_score(1, 1, 80, 100)
+        cna = state.get_cna(sprint_num=1)
+        # CNA = 80 / 10 * 100 = 800
+        assert abs(cna - 800.0) < 0.01
+
+
+def test_get_cna_zero_cost():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = HarnessState(tmpdir)
+        state.init()
+        state.add_eval_score(1, 1, 80, 100)
+        assert state.get_cna(sprint_num=1) == 0.0
+
+
+def test_get_cna_no_scores():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = HarnessState(tmpdir)
+        state.init()
+        state.add_cost_usd(10.0)
+        assert state.get_cna() == 0.0
+
+
+def test_get_run_efficiency():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = HarnessState(tmpdir)
+        state.init()
+        state.add_cost_usd(15.0, "build")
+        state.add_eval_score(1, 1, 45, 50)
+        state.increment(1, "build")
+        state.increment(1, "build")
+        state.increment(1, "eval")
+        eff = state.get_run_efficiency()
+        assert eff["score_pct"] == 90
+        assert abs(eff["cost_usd"] - 15.0) < 0.01
+        assert eff["cna"] == round(90 / 15 * 100, 1)
+        assert eff["build_attempts"] == 2
+        assert eff["eval_attempts"] == 1

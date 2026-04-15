@@ -41,8 +41,11 @@ CONFIG = {
     "output_dir": "output",
     "comms_dir": "comms",
 
+    # --- Benchmarking ---
+    "use_golden_dataset": False,  # Reuse criteria from golden_datasets/ for reproducible benchmarks
+
     # --- Verifier ---
-    "verifier_enabled": False,  # Disabled: blocks Evaluator on single API failure, wastes build cycles
+    "verifier_enabled": True,   # Advisory mode: runs deterministic checks, does not block Evaluator
     "verifier_timeout": 300,            # total 5 min for all checks
     "verifier_check_timeout": 30,       # per-check timeout
     "verifier_retry_inconclusive": 1,   # retry count for INCONCLUSIVE results

@@ -193,6 +193,42 @@ class HarnessState:
             data["run_meta"] = meta
             self._save(data)
 
+    def get_cna(self, sprint_num: int | None = None) -> float:
+        """Cost-Normalized Accuracy: score / cost * 100. Higher = better.
+
+        If sprint_num is given, uses the last eval score for that sprint
+        and the total cost. Otherwise uses the overall last eval score.
+        """
+        data = self.load()
+        scores = data.get("eval_scores", [])
+        if sprint_num is not None:
+            scores = [s for s in scores if s["sprint"] == sprint_num]
+        if not scores:
+            return 0.0
+        last_score = scores[-1].get("pct", 0)
+        cost = data.get("cost", {}).get("total_usd", 0.0)
+        if cost <= 0:
+            return 0.0
+        return last_score / cost * 100
+
+    def get_run_efficiency(self) -> dict:
+        """Compute run efficiency metrics for the final report.
+
+        Returns dict with: score_pct, cost_usd, cna, build_attempts, eval_attempts.
+        """
+        data = self.load()
+        scores = data.get("eval_scores", [])
+        last_score = scores[-1].get("pct", 0) if scores else 0
+        cost = data.get("cost", {}).get("total_usd", 0.0)
+        cna = last_score / cost * 100 if cost > 0 else 0.0
+        return {
+            "score_pct": last_score,
+            "cost_usd": cost,
+            "cna": round(cna, 1),
+            "build_attempts": self.total("build", data),
+            "eval_attempts": self.total("eval", data),
+        }
+
     def add_eval_details(self, sprint_num: int, attempt: int,
                          failed: list[str], persistent: list[str] | None = None):
         """Record failed criteria for cross-attempt analysis."""
