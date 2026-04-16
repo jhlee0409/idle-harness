@@ -4,14 +4,17 @@ Runs a fixed set of prompts N times each, collects results from
 output/{slug}/.harness/status.json, and computes reliability metrics.
 
 Usage:
-    python benchmark.py run prompts.json --runs 5
+    python benchmark.py run "prompt" --runs 5
     python benchmark.py report results/
     python benchmark.py compare results_before/ results_after/
 """
 
+import argparse
 import json
 import math
 import os
+import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -432,64 +435,235 @@ def print_report(report: BenchmarkReport):
 
 
 # ---------------------------------------------------------------------------
+# Run: execute orchestrator N times and collect results
+# ---------------------------------------------------------------------------
+
+def _find_new_output(output_base: str, known: set[str]) -> str | None:
+    """Find a new output directory that wasn't in the known set."""
+    if not os.path.isdir(output_base):
+        return None
+    for slug in os.listdir(output_base):
+        if slug not in known and os.path.isdir(os.path.join(output_base, slug)):
+            return slug
+    return None
+
+
+def run_benchmark(
+    prompt: str,
+    runs: int = 5,
+    results_dir: str = "benchmark_results",
+    output_base: str = "output",
+) -> BenchmarkReport:
+    """Run the orchestrator N times with the same prompt, collect results.
+
+    Each run is a separate subprocess to ensure clean state (ports, MCP, comms/).
+    Results are saved incrementally — if interrupted, partial results are kept.
+    """
+    harness_root = os.path.dirname(os.path.abspath(__file__))
+    orchestrator_path = os.path.join(harness_root, "orchestrator.py")
+    output_abs = os.path.join(harness_root, output_base)
+
+    # Load existing results if resuming
+    existing_report = None
+    existing_runs: list[RunResult] = []
+    results_path = os.path.join(results_dir, "benchmark_results.json")
+    if os.path.exists(results_path):
+        try:
+            existing_report = generate_report(results_dir)
+            for ps in existing_report.prompts:
+                if ps.prompt == prompt:
+                    existing_runs = list(ps.runs)
+                    break
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+    completed = len(existing_runs)
+    if completed >= runs:
+        print(f"Already have {completed} runs for this prompt (requested {runs}). Use --runs {completed + 5} to add more.")
+        report = BenchmarkReport(
+            prompts=[PromptStats(prompt=prompt, runs=existing_runs)],
+            generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+        return report
+
+    print("=" * 60)
+    print(f"  BENCHMARK RUN")
+    print(f"  Prompt: {prompt}")
+    print(f"  Runs: {completed}/{runs} completed, {runs - completed} remaining")
+    print("=" * 60)
+
+    all_runs = list(existing_runs)
+    known_slugs = {s for s in os.listdir(output_abs)} if os.path.isdir(output_abs) else set()
+
+    for i in range(completed, runs):
+        run_num = i + 1
+        run_start = time.time()
+        print(f"\n{'─' * 60}")
+        print(f"  Run {run_num}/{runs}")
+        print(f"{'─' * 60}")
+
+        # Snapshot existing output dirs
+        pre_slugs = set(os.listdir(output_abs)) if os.path.isdir(output_abs) else set()
+
+        # Run orchestrator as subprocess
+        env = os.environ.copy()
+        env["CI"] = "1"  # Non-interactive mode
+        try:
+            proc = subprocess.run(
+                [sys.executable, orchestrator_path, prompt],
+                cwd=harness_root,
+                env=env,
+                timeout=None,  # No timeout — orchestrator has its own
+            )
+            exit_code = proc.returncode
+        except KeyboardInterrupt:
+            print(f"\n  Interrupted at run {run_num}/{runs}. Saving partial results...")
+            break
+
+        # Find the new output directory
+        post_slugs = set(os.listdir(output_abs)) if os.path.isdir(output_abs) else set()
+        new_slugs = post_slugs - pre_slugs
+        elapsed = int(time.time() - run_start)
+
+        if new_slugs:
+            new_slug = sorted(new_slugs)[0]  # Take first if multiple
+            output_dir = os.path.join(output_abs, new_slug)
+            result = collect_run_result(output_dir, prompt)
+            if result:
+                all_runs.append(result)
+                status = "PASS" if result.passed else "FAIL"
+                warn = f" ({', '.join(result.warnings)})" if result.warnings else ""
+                print(f"\n  Run {run_num}: {status} | "
+                      f"{result.score_pct}% | ${result.cost_usd:.2f} | "
+                      f"{_fmt_duration(elapsed)}{warn}")
+            else:
+                print(f"\n  Run {run_num}: Could not collect result from {new_slug}")
+        else:
+            print(f"\n  Run {run_num}: No new output directory created (exit code {exit_code})")
+
+        # Save incrementally
+        stats = PromptStats(prompt=prompt, runs=all_runs)
+        report = BenchmarkReport(
+            prompts=[stats],
+            generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+        save_results(results_dir, report)
+
+        # Print running stats
+        if len(all_runs) >= 2:
+            print(f"\n  Running stats ({stats.n} runs):")
+            print(f"    Pass Rate: {stats.success_rate:.0%} | "
+                  f"Pass@1: {stats.pass_at_k(1):.0%} | "
+                  f"Pass^3: {stats.pass_power_k(3):.0%} | "
+                  f"CNA: {stats.avg_cna:.0f}")
+
+    # Final report
+    final_stats = PromptStats(prompt=prompt, runs=all_runs)
+    report = BenchmarkReport(
+        prompts=[final_stats],
+        generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+    save_results(results_dir, report)
+    print()
+    print_report(report)
+    return report
+
+
+def _fmt_duration(secs: int) -> str:
+    if secs < 60:
+        return f"{secs}s"
+    mins, s = divmod(secs, 60)
+    if mins < 60:
+        return f"{mins}m {s}s"
+    hours, m = divmod(mins, 60)
+    return f"{hours}h {m}m"
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-def _cmd_report(results_dir: str):
-    report = generate_report(results_dir)
-    print_report(report)
-
-
-def _cmd_compare(before_dir: str, after_dir: str):
-    before = generate_report(before_dir)
-    after = generate_report(after_dir)
-    print(compare_reports(before, after))
-
-
 def main():
-    if len(sys.argv) < 2:
-        print("Usage:")
-        print("  python benchmark.py report <results_dir>")
-        print("  python benchmark.py compare <before_dir> <after_dir>")
-        print()
-        print("To collect results from completed harness runs:")
-        print("  python benchmark.py collect <output_base> <prompt> <results_dir>")
+    parser = argparse.ArgumentParser(
+        description="Benchmark suite for harness reliability metrics",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python benchmark.py run "API status monitoring dashboard" --runs 5
+  python benchmark.py report benchmark_results/
+  python benchmark.py compare results_v1/ results_v2/
+  python benchmark.py collect output/ "recipe sharing" results/
+        """,
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # run
+    p_run = sub.add_parser("run", help="Run orchestrator N times and collect results")
+    p_run.add_argument("prompt", help="The app prompt to build")
+    p_run.add_argument("--runs", type=int, default=5, help="Number of runs (default: 5)")
+    p_run.add_argument("--results-dir", default="benchmark_results", help="Results directory")
+    p_run.add_argument("--output-base", default="output", help="Output base directory")
+
+    # report
+    p_report = sub.add_parser("report", help="Print benchmark report")
+    p_report.add_argument("results_dir", help="Results directory")
+
+    # compare
+    p_compare = sub.add_parser("compare", help="Compare two benchmark runs")
+    p_compare.add_argument("before_dir", help="Before results directory")
+    p_compare.add_argument("after_dir", help="After results directory")
+
+    # collect
+    p_collect = sub.add_parser("collect", help="Collect results from existing outputs")
+    p_collect.add_argument("output_base", help="Output base directory")
+    p_collect.add_argument("prompt", help="Prompt label for grouping")
+    p_collect.add_argument("--results-dir", default="benchmark_results", help="Results directory")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
         sys.exit(0)
 
-    cmd = sys.argv[1]
+    if args.command == "run":
+        run_benchmark(
+            prompt=args.prompt,
+            runs=args.runs,
+            results_dir=args.results_dir,
+            output_base=args.output_base,
+        )
 
-    if cmd == "report":
-        _cmd_report(sys.argv[2])
-    elif cmd == "compare":
-        _cmd_compare(sys.argv[2], sys.argv[3])
-    elif cmd == "collect":
-        # Collect results from all output dirs matching a prompt
-        output_base = sys.argv[2]
-        prompt = sys.argv[3]
-        results_dir = sys.argv[4] if len(sys.argv) > 4 else "benchmark_results"
+    elif args.command == "report":
+        report = generate_report(args.results_dir)
+        print_report(report)
+
+    elif args.command == "compare":
+        before = generate_report(args.before_dir)
+        after = generate_report(args.after_dir)
+        print(compare_reports(before, after))
+
+    elif args.command == "collect":
         results = []
-        for slug in sorted(os.listdir(output_base)):
-            output_dir = os.path.join(output_base, slug)
+        for slug in sorted(os.listdir(args.output_base)):
+            output_dir = os.path.join(args.output_base, slug)
             if not os.path.isdir(output_dir):
                 continue
-            result = collect_run_result(output_dir, prompt)
+            result = collect_run_result(output_dir, args.prompt)
             if result:
                 results.append(result)
-                print(f"  Collected: {slug} — {'PASS' if result.passed else 'FAIL'} "
+                status = "PASS" if result.passed else "FAIL"
+                print(f"  Collected: {slug} — {status} "
                       f"({result.score_pct}%, ${result.cost_usd:.2f})")
 
         if results:
-            stats = PromptStats(prompt=prompt, runs=results)
+            stats = PromptStats(prompt=args.prompt, runs=results)
             report = BenchmarkReport(
                 prompts=[stats],
                 generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             )
-            save_results(results_dir, report)
-            print(f"\nSaved to {results_dir}/benchmark_results.json")
+            save_results(args.results_dir, report)
+            print(f"\nSaved to {args.results_dir}/benchmark_results.json")
             print_report(report)
-    else:
-        print(f"Unknown command: {cmd}")
-        sys.exit(1)
 
 
 if __name__ == "__main__":

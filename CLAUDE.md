@@ -25,8 +25,9 @@ python orchestrator.py clean --all    # Clean comms/ + output/
 python orchestrator.py --setup        # Interactive dependency setup
 
 # Benchmark
+python benchmark.py run "prompt" --runs 5         # Run orchestrator N times, auto-collect
 python benchmark.py report results/              # View benchmark report
-python benchmark.py collect output/ "prompt" results/  # Collect results from runs
+python benchmark.py collect output/ "prompt" results/  # Collect results from existing runs
 python benchmark.py compare results_v1/ results_v2/   # Compare two benchmark runs
 ```
 

@@ -16,6 +16,7 @@ from benchmark import (
     save_results,
     generate_report,
     compare_reports,
+    _find_new_output,
 )
 
 
@@ -307,3 +308,51 @@ def test_compare_reports():
     assert "Pass@1" in comparison
     assert "Pass^3" in comparison
     assert "test app" in comparison
+
+
+# ---------------------------------------------------------------------------
+# _find_new_output
+# ---------------------------------------------------------------------------
+
+def test_find_new_output_detects_new_dir():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.makedirs(os.path.join(tmpdir, "existing-app"))
+        known = {"existing-app"}
+        os.makedirs(os.path.join(tmpdir, "new-app"))
+        result = _find_new_output(tmpdir, known)
+        assert result == "new-app"
+
+
+def test_find_new_output_returns_none_if_no_new():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.makedirs(os.path.join(tmpdir, "existing"))
+        known = {"existing"}
+        result = _find_new_output(tmpdir, known)
+        assert result is None
+
+
+def test_find_new_output_nonexistent_dir():
+    result = _find_new_output("/nonexistent/path", set())
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Round-trip with warnings
+# ---------------------------------------------------------------------------
+
+def test_save_load_preserves_warnings():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run = RunResult(
+            prompt="test", slug="test-app",
+            passed=True, score_pct=100,
+            cost_usd=50.0, elapsed_s=600,
+            build_attempts=2,
+            warnings=["no_eval_scores: inferred"],
+        )
+        stats = PromptStats(prompt="test", runs=[run])
+        report = BenchmarkReport(prompts=[stats], generated_at="2026-04-16T00:00:00Z")
+        save_results(tmpdir, report)
+
+        loaded = generate_report(tmpdir)
+        loaded_run = loaded.prompts[0].runs[0]
+        assert loaded_run.warnings == ["no_eval_scores: inferred"]
