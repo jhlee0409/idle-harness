@@ -520,24 +520,29 @@ def run_benchmark(
             print(f"\n  Interrupted at run {run_num}/{runs}. Saving partial results...")
             break
 
-        # Find the new output directory
+        # Find the new output directory (the one with status.json)
         post_slugs = set(os.listdir(output_abs)) if os.path.isdir(output_abs) else set()
         new_slugs = post_slugs - pre_slugs
         elapsed = int(time.time() - run_start)
 
+        # Filter to dirs that have .harness/status.json (skip empty/partial dirs)
+        result = None
         if new_slugs:
-            new_slug = sorted(new_slugs)[0]  # Take first if multiple
-            output_dir = os.path.join(output_abs, new_slug)
-            result = collect_run_result(output_dir, prompt)
-            if result:
-                all_runs.append(result)
-                status = "PASS" if result.passed else "FAIL"
-                warn = f" ({', '.join(result.warnings)})" if result.warnings else ""
-                print(f"\n  Run {run_num}: {status} | "
-                      f"{result.score_pct}% | ${result.cost_usd:.2f} | "
-                      f"{_fmt_duration(elapsed)}{warn}")
-            else:
-                print(f"\n  Run {run_num}: Could not collect result from {new_slug}")
+            for new_slug in sorted(new_slugs, reverse=True):  # longest name first (actual build, not partial)
+                output_dir = os.path.join(output_abs, new_slug)
+                result = collect_run_result(output_dir, prompt)
+                if result:
+                    break
+
+        if result:
+            all_runs.append(result)
+            status = "PASS" if result.passed else "FAIL"
+            warn = f" ({', '.join(result.warnings)})" if result.warnings else ""
+            print(f"\n  Run {run_num}: {status} | "
+                  f"{result.score_pct}% | ${result.cost_usd:.2f} | "
+                  f"{_fmt_duration(elapsed)}{warn}")
+        elif new_slugs:
+            print(f"\n  Run {run_num}: New dirs created ({', '.join(new_slugs)}) but no status.json found")
         else:
             print(f"\n  Run {run_num}: No new output directory created (exit code {exit_code})")
 
