@@ -59,11 +59,22 @@ CONFIG = {
     ],
 
     # --- MCP / tools ---
+    # Official Playwright MCP from Microsoft (@playwright/mcp)
+    # --caps vision: coordinate-based interactions for canvas/custom UI
+    # --caps devtools: access to DevTools protocol features
+    # --isolated: fresh browser profile per session (prevents state leakage between tests)
+    # Note: localStorage/network mocking done via browser_evaluate / browser_run_code
+    # (no dedicated storage/network caps exist in @playwright/mcp)
     "mcp_tool": "playwright",
     "mcp_servers": {
         "playwright": {
             "command": "npx",
-            "args": ["@anthropic-ai/mcp-server-playwright"],
+            "args": [
+                "-y", "@playwright/mcp@latest",
+                "--caps", "vision,devtools",
+                "--isolated",
+                "--viewport-size", "1280x720",
+            ],
         },
     },
 }

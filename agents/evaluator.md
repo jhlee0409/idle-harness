@@ -67,6 +67,8 @@ Every `- [x]` line in your evaluation MUST end with `| screenshots/filename.png`
    - API endpoints: verify data persists after page refresh (not just localStorage)
    - Database state: create data, refresh the page, confirm it's still there
 4. **Take screenshots** as evidence for every claim you make. Save screenshots to the path provided in the prompt (a sprint-specific directory will be given).
+
+**Playwright MCP capabilities enabled**: `vision` (coordinate-based interactions for canvas/custom UI), `devtools` (DevTools protocol access). If a feature uses `<canvas>`, custom-drawn UI, or non-accessibility-tree elements, use coordinate-based `browser_click` via vision mode. For multi-step transient state capture, combine `browser_evaluate` with `MutationObserver` or `setTimeout` polling (see examples below).
 5. **Assess quality** across four criteria (see below)
 6. **Write your evaluation** as a response using the format below
 

@@ -72,7 +72,7 @@ async def call_agent(
     """Call a Claude agent. Pass resume=session_id to continue a previous session.
 
     mcp_servers: SDK-managed MCP servers (launched automatically, no user setup needed).
-                 Example: {"playwright": {"command": "npx", "args": ["@anthropic-ai/mcp-server-playwright"]}}
+                 Example: {"playwright": {"command": "npx", "args": ["-y", "@playwright/mcp@latest"]}}
     timeout: Wall-clock timeout in seconds. 0 = no limit. Raises AgentTimeout on expiry.
     model: Override model for this call. None = use CONFIG["model"].
     """

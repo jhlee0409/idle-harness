@@ -1028,6 +1028,18 @@ class Orchestrator:
                 f"Do NOT delete data that doesn't have your prefix — it belongs to another evaluator."
             )
 
+        # Criteria count freeze: prevent eval-time drift (e.g. Pulse 73→89)
+        section_criteria_count = _count_criteria(criteria_text)
+        freeze_instruction = (
+            f"\n\nCRITERIA COUNT LOCK: This section contains EXACTLY {section_criteria_count} "
+            f"checkbox criteria (lines starting with '- [x]' or '- [ ]'). Your evaluation "
+            f"MUST output the same {section_criteria_count} checkboxes — no more, no less.\n"
+            f"DO NOT invent new criteria during evaluation. DO NOT split or merge criteria. "
+            f"DO NOT add 'bonus' checks. If you discover issues not in the criteria, note "
+            f"them in Required Changes instead of adding new checkboxes.\n"
+            f"If the count mismatches, your evaluation will be rejected and re-run.\n"
+        )
+
         if is_lead:
             prompt = (
                 f"Evaluate this SUBSET of the application (you are evaluator {evaluator_id}, "
@@ -1038,6 +1050,7 @@ class Orchestrator:
                 f"Write BOTH Feature Testing checkboxes AND the full Quality Assessment "
                 f"(Frontend + Backend tables, Evidence, Evidence Audit, Verdict, Required Changes).\n"
                 f"Navigate to {CONFIG['dev_server_url']}."
+                f"{freeze_instruction}"
                 f"{scope_block}"
                 f"{write_instruction}"
                 f"{prev_eval_section}"
@@ -1057,6 +1070,7 @@ class Orchestrator:
                 f"- Required Changes\n\n"
                 f"If you find issues, mark them as FAIL checkboxes with explanation.\n"
                 f"Navigate to {CONFIG['dev_server_url']}."
+                f"{freeze_instruction}"
                 f"{scope_block}"
                 f"{write_instruction}"
                 f"{prev_eval_section}"
@@ -1077,6 +1091,17 @@ class Orchestrator:
 
         # Use whichever source has more criteria: text response or per-evaluator disk file
         best = self._pick_best_eval(result.result, eval_output_path)
+
+        # Criteria count drift detection (rubric freeze enforcement)
+        output_count = _count_criteria(best)
+        if output_count > 0 and output_count != section_criteria_count:
+            drift = output_count - section_criteria_count
+            sign = "+" if drift > 0 else ""
+            _log("Evaluator", f"⚠ Criteria drift detected: evaluator {evaluator_id} "
+                 f"expected {section_criteria_count}, got {output_count} ({sign}{drift}). "
+                 f"Rubric freeze violated.")
+            _log_event("criteria_drift", evaluator_id=evaluator_id,
+                       expected=section_criteria_count, actual=output_count, drift=drift)
 
         # Validation: if both sources have 0 checkboxes, retry once
         if _count_criteria(best) == 0:
@@ -2327,7 +2352,21 @@ class Orchestrator:
             f"If you choose MPA with full page reloads, transitions won't work.\n\n"
             f"For EACH conflicting criterion, explain WHY it conflicts and HOW you'll "
             f"handle it (change your architecture, or implement a workaround).\n\n"
-            f"STEP 3 — Confirm:\n"
+            f"STEP 3 — DEFENSIVE UI CHECKLIST (mandatory, first-build priority):\n"
+            f"These four UI states fail in EVERY first build we've analyzed. "
+            f"Plan them from the start, not as afterthoughts:\n"
+            f"  1. **Skeleton loading**: every data-fetching component shows a skeleton "
+            f"     (not just a spinner) while data loads. Even if API is fast locally, "
+            f"     the production evaluator will slow fetch to verify skeletons render.\n"
+            f"  2. **Error banner with Retry**: when API returns 500 or network fails, "
+            f"     show a user-friendly error + retry button. Silent failures = FAIL.\n"
+            f"  3. **Loading/disabled button state**: form submit buttons show loading "
+            f"     state (spinner + disabled) during the request. Too-fast responses "
+            f"     still need this — the evaluator intercepts with delays.\n"
+            f"  4. **Empty state**: every list/table shows a meaningful empty state "
+            f"     with a CTA, not just 'No data'. Blank areas = FAIL.\n"
+            f"Confirm you will implement ALL four from the first build, not as retries.\n\n"
+            f"STEP 4 — Confirm:\n"
             f"Write ACKNOWLEDGED to confirm you understand the full scope.\n\n"
             f"Do NOT start building yet. Just review and acknowledge."
         )
