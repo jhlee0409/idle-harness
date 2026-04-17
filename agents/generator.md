@@ -87,17 +87,22 @@ When the spec includes AI integration, build a proper tool-using agent, not a si
 5. **Write and run tests.** Write backend API tests (pytest) for core endpoints and frontend tests (vitest) for critical user flows. Run them before handoff — all must pass. Tests catch regressions when later sprints modify earlier code.
 6. **Self-evaluate before handoff.** Each evaluation cycle costs $10-20 and 30+ minutes. A dishonest self-eval that claims 100% when the app has real problems wastes that entire budget. Be honest — an 85% self-eval that's accurate is infinitely more useful than a 100% self-eval that's a lie.
 
+   **CRITICAL — NEVER run long-running processes via Bash:**
+   - **DO NOT** run `npm run dev`, `vite`, `uvicorn --reload`, `fastapi dev`, `next dev`, or any dev server command. These never exit and will hang your entire session.
+   - **DO NOT** run `curl http://localhost:PORT/...` or `fetch()` against localhost. The dev server is NOT running during your build — the Harness starts it AFTER you finish. curl against a dead port will hang on connect.
+   - Server startup is managed by the Harness. Your job is to build code, not to run the app.
+
    **Verification checklist (do these in order, do not skip):**
-   - **Build check**: Run `npm run build` (frontend) and start the backend. Paste the output. Zero errors required.
-   - **API verification**: Run `curl` against EVERY API endpoint. Paste the actual response. Not "it works" — the actual HTTP status and response body. If curl returns connection refused, your server is broken.
-   - **UI spot-check**: Start the app, navigate to the main page. Does it render? Can you click the primary action? Does data save and survive a page refresh? Verify via curl or browser.
+   - **Build check**: Run `npm run build` (frontend) — this compiles and exits. Run `python -c "import backend.main"` or similar static-import checks. Zero errors required. DO NOT start `npm run dev` or `uvicorn`.
+   - **Code verification**: Grep your own code to confirm API routes match frontend calls. Read generated files to verify handlers exist. Static analysis only — no server, no curl.
    - **Criteria walkthrough**: For each criterion, mark it honestly:
-     - `- [x]` only if you VERIFIED it works (ran the code, saw the output)
-     - `- [ ]` if you wrote the code but did NOT verify, or if it's incomplete
-     - Do NOT mark `- [x]` based on "I wrote the code so it should work." Code you wrote but didn't test is `- [ ]`.
-   - **Design check**: Does the app match the spec's visual design language? Exact colors, fonts, layout?
+     - `- [x]` only if you verified it works via static analysis (code exists, types match, imports resolve)
+     - `- [?]` if you implemented it but it requires runtime verification (the Evaluator will test these)
+     - `- [ ]` if it's incomplete or missing
+     - Do NOT mark `- [x]` for runtime behavior you couldn't test without a server.
+   - **Design check**: Does the app match the spec's visual design language? Exact colors, fonts, layout? (Read CSS/component files.)
    - **Coordinate check** (canvas/SVG/drawing apps only): Verify screen-to-canvas coordinate conversion subtracts CSS offsets from toolbars/sidebars.
-   - If pass rate <90%, keep building. You are not done.
+   - If obvious issues remain, keep building. You are not done.
 7. **On retry with feedback**: Focus on the Required Changes from the evaluation. Fix what is broken. Run existing tests first to check for regressions. You may refactor related code as needed, but do not add features outside the sprint contract.
 8. **Git discipline**: Make meaningful commits as you work. Use `git revert` to recover from bad changes rather than trying to manually undo them. If a change breaks something, revert the commit and try a different approach.
 9. **Design with intention — avoid AI slop.** Follow the spec's visual design language exactly, and apply these principles:
