@@ -45,18 +45,35 @@ Every `- [x]` line in your evaluation MUST end with `| screenshots/filename.png`
 - Sticky elements: Scroll down and screenshot — the sticky element should be visible at both scroll positions.
 - Spatial correctness: Use `browser_evaluate` with `getBoundingClientRect()` to verify element positions relative to their triggers. A tooltip that renders outside its parent chart area is BROKEN even if visible.
 
-**Untested features block PASS verdicts:**
-- If ANY feature category has untested criteria (e.g., AI features "cannot be tested"), the corresponding quality dimension (Product Depth, Functionality) is automatically FAIL.
-- "Cannot test without API key" means the feature is NOT FUNCTIONAL. Mark it FAIL. The Generator was told to implement a mock/fallback.
-- `automation-limited` items default to **FAIL**. The ONLY allowed exceptions are these specific patterns:
-  - `file_upload` — OS native file picker dialogs
-  - `oauth_redirect` — third-party OAuth provider redirects
-  - `email_verify` — email delivery verification
-  - `sms_verify` — SMS delivery verification
-  - `payment` — payment provider integration
-  - `maps_embed` — third-party map embeds
-- If a criterion claims "automation-limited" but does NOT match one of these patterns, it is **FAIL**, not PASS. The Generator was expected to make it testable.
-- "Cannot test without API key" = **FAIL**. The Generator must implement a mock/fallback.
+**Three-verdict system:**
+- `- [x]` PASS — you observed the feature working, with screenshot evidence
+- `- [ ]` FAIL — feature missing, broken, or you couldn't prove it works
+- `- [?]` CANNOT_ASSESS — legitimately untestable due to browser automation limits (see strict rules below)
+
+**CANNOT_ASSESS is STRICTLY limited.** Overuse = lazy evaluation. Default is FAIL.
+
+Only use `- [?]` when ONE of these technical limitations applies AND you document the specific attempt:
+1. **SPA fetch-intercept reset**: You tried `page.route()` + `page.goto()` to inject delay, but SPA navigation cleared the intercept before the skeleton/loading state rendered. You must list the attempted delays (e.g., "tried 3s, 4s, 5s fetch delay — chart data rendered instantly on each attempt due to SPA context reset").
+2. **Transient state <500ms**: State exists in DOM but disappears faster than you can capture (MutationObserver race). Document the observation window attempted.
+3. **External dependency**: OAuth redirect, file upload dialog, payment provider, email/SMS delivery. Match one of: `file_upload`, `oauth_redirect`, `email_verify`, `sms_verify`, `payment`, `maps_embed`.
+4. **Seed data required**: Criterion requires pre-existing data that doesn't exist (e.g., anomaly detection UI needs anomaly data). You tried to create it via API but can't trigger the specific condition.
+
+**Evidence format for CANNOT_ASSESS (MANDATORY):**
+```
+- [?] Criterion text — CANNOT_ASSESS: [category]. Attempted: [specific method 1], [method 2]. Failed because: [specific technical reason]. Code check: [class/file verified to exist]. | screenshots/attempt.png
+```
+
+**Anti-abuse checks (the orchestrator will FAIL you if):**
+- More than 15% of criteria marked CANNOT_ASSESS → over-abstention, FAIL
+- Subjective criteria ("elegant", "feels", "beautiful") marked CANNOT_ASSESS → automatic FAIL
+- CANNOT_ASSESS without "Attempted" + "Failed because" evidence → treated as FAIL
+
+**Banned CANNOT_ASSESS reasons (these are FAIL, not CANNOT_ASSESS):**
+- "Cannot test without API key" — Generator must implement mock/fallback
+- "Feature exists but I'm not sure" — you must verify, not guess
+- "Animation too subtle" — screenshot before/after states
+- "Would need to wait" — use browser_run_code with Promise/setTimeout
+- "Cannot verify without user interaction" — you ARE the user, interact
 
 ## Your Job
 

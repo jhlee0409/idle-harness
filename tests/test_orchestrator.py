@@ -846,22 +846,24 @@ def test_parse_eval_score_mixed():
 - [ ] Feature C broken ← FAIL | screenshots/c.png
 - [x] Feature D works | screenshots/d.png
 """
-    passed, total = _parse_eval_score(text)
+    passed, total, cannot_assess = _parse_eval_score(text)
     assert passed == 3
     assert total == 4
+    assert cannot_assess == 0
 
 
 def test_parse_eval_score_empty():
     from orchestrator import _parse_eval_score
-    assert _parse_eval_score("No criteria here") == (0, 0)
+    assert _parse_eval_score("No criteria here") == (0, 0, 0)
 
 
 def test_parse_eval_score_all_pass():
     from orchestrator import _parse_eval_score
     text = "- [x] A\n- [x] B\n- [x] C\n"
-    passed, total = _parse_eval_score(text)
+    passed, total, cannot_assess = _parse_eval_score(text)
     assert passed == 3
     assert total == 3
+    assert cannot_assess == 0
 
 
 def test_parse_eval_score_prefers_feature_pass_rate():
@@ -874,10 +876,55 @@ def test_parse_eval_score_prefers_feature_pass_rate():
         "- [x] Data persists\n- [x] API works\n- [x] Errors handled\n"
         "\n### Feature Pass Rate: 2/3 (67%)\n"
     )
-    passed, total = _parse_eval_score(text)
+    passed, total, cannot_assess = _parse_eval_score(text)
     # Should use the explicit 2/3, not count all 6 checkboxes
     assert passed == 2
     assert total == 3
+
+
+def test_parse_eval_score_with_cannot_assess():
+    """New [?] checkbox counts as CANNOT_ASSESS, not PASS or FAIL."""
+    from orchestrator import _parse_eval_score
+    text = (
+        "- [x] A works\n"
+        "- [x] B works\n"
+        "- [?] C cannot test — SPA intercept reset\n"
+        "- [ ] D broken\n"
+    )
+    passed, total, cannot_assess = _parse_eval_score(text)
+    assert passed == 2
+    assert total == 4
+    assert cannot_assess == 1
+
+
+def test_compute_coverage_basic():
+    """Coverage-adjusted scoring: excludes CANNOT_ASSESS from denominator."""
+    from orchestrator import _compute_coverage
+    # 86 pass / 86 testable = 100% score, 86/87 = 99% coverage
+    score, coverage = _compute_coverage(86, 87, 1)
+    assert score == 100
+    assert coverage == 98  # 86/87 = 98.8% → 98 with int()
+
+
+def test_compute_coverage_zero_total():
+    from orchestrator import _compute_coverage
+    assert _compute_coverage(0, 0, 0) == (0, 0)
+
+
+def test_compute_coverage_all_cannot_assess():
+    """If every criterion is CANNOT_ASSESS, coverage is 0, score is 0."""
+    from orchestrator import _compute_coverage
+    score, coverage = _compute_coverage(0, 5, 5)
+    assert score == 0
+    assert coverage == 0
+
+
+def test_compute_coverage_mixed():
+    from orchestrator import _compute_coverage
+    # 8 pass / 10 total / 2 cannot_assess → 8/8 testable = 100%, 8/10 = 80% coverage
+    score, coverage = _compute_coverage(8, 10, 2)
+    assert score == 100
+    assert coverage == 80
 
 
 # --- _pick_best_eval: checkbox-based comparison ---

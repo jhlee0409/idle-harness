@@ -135,18 +135,28 @@ class HarnessState:
             data["timings"]["plan"] = seconds
             self._save(data)
 
-    def add_eval_score(self, sprint_num: int, attempt: int, passed: int, total: int):
-        """Record eval score for regression detection."""
+    def add_eval_score(self, sprint_num: int, attempt: int, passed: int, total: int,
+                       cannot_assess: int = 0):
+        """Record eval score for regression detection.
+
+        With CANNOT_ASSESS support:
+        - pct = passed / (total - cannot_assess) * 100  (coverage-adjusted)
+        - coverage_pct = (total - cannot_assess) / total * 100
+        """
         with self._lock:
             data = self.load()
             scores = data.setdefault("eval_scores", [])
-            pct = int(passed / total * 100) if total > 0 else 0
+            testable = total - cannot_assess
+            pct = int(passed / testable * 100) if testable > 0 else 0
+            coverage_pct = int(testable / total * 100) if total > 0 else 0
             scores.append({
                 "sprint": sprint_num,
                 "attempt": attempt,
                 "passed": passed,
                 "total": total,
+                "cannot_assess": cannot_assess,
                 "pct": pct,
+                "coverage_pct": coverage_pct,
             })
             self._save(data)
 

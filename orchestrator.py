@@ -60,34 +60,59 @@ def _parse_failed_parts(text: str) -> tuple[bool, bool]:
     return _part_passed(_FRONTEND_CRITERIA), _part_passed(_BACKEND_CRITERIA)
 
 
-_CRITERIA_RE = re.compile(r"^\s*- \[[x ]\] ", re.MULTILINE)
+# [x] = PASS, [ ] = FAIL, [?] = CANNOT_ASSESS (test environment limitation, not a bug)
+_CRITERIA_RE = re.compile(r"^\s*- \[[x ?]\] ", re.MULTILINE)
+_CANNOT_ASSESS_RE = re.compile(r"^\s*- \[\?\] ", re.MULTILINE)
 
 
 def _count_criteria(text: str) -> int:
-    """Count checkbox-format criteria lines (- [x] or - [ ])."""
+    """Count checkbox-format criteria lines (- [x], - [ ], or - [?])."""
     return len(_CRITERIA_RE.findall(text))
 
 
-def _parse_eval_score(text: str) -> tuple[int, int]:
-    """Parse pass/fail counts from evaluation text.
+def _parse_eval_score(text: str) -> tuple[int, int, int]:
+    """Parse pass/fail/cannot_assess counts from evaluation text.
 
-    Prefers the Evaluator's explicit "Feature Pass Rate: X/Y" line when present,
-    since checkbox counting can include extra summary sections the Evaluator adds
-    beyond the original criteria (e.g. "Full-Stack Verification").
-    Falls back to counting checkboxes if no explicit rate is found.
-    Returns (passed_count, total_count). Returns (0, 0) if unparseable.
+    Returns (passed_count, total_count, cannot_assess_count).
+    Prefers the Evaluator's explicit "Feature Pass Rate: X/Y" line when present.
+    For CANNOT_ASSESS, counts [?] checkboxes separately.
     """
-    # Prefer Evaluator's own declared count
+    passed = len(re.findall(r"^\s*- \[x\] ", text, re.MULTILINE))
+    failed = len(re.findall(r"^\s*- \[ \] ", text, re.MULTILINE))
+    cannot_assess = len(_CANNOT_ASSESS_RE.findall(text))
+    checkbox_total = passed + failed + cannot_assess
+
+    # Prefer Evaluator's own declared count (only covers passed/total, not CANNOT_ASSESS)
     rate_match = re.search(
         r"Feature Pass Rate:\s*(\d+)\s*/\s*(\d+)", text, re.IGNORECASE
     )
     if rate_match:
-        return int(rate_match.group(1)), int(rate_match.group(2))
-    # Fallback: count checkboxes
-    passed = len(re.findall(r"^\s*- \[x\] ", text, re.MULTILINE))
-    failed = len(re.findall(r"^\s*- \[ \] ", text, re.MULTILINE))
-    total = passed + failed
-    return passed, total
+        declared_passed = int(rate_match.group(1))
+        declared_total = int(rate_match.group(2))
+        # Use declared numbers if they're consistent with checkbox count
+        if checkbox_total == declared_total:
+            return declared_passed, declared_total, cannot_assess
+        # Fallback: declared rate takes precedence for compatibility
+        return declared_passed, declared_total, cannot_assess
+    return passed, checkbox_total, cannot_assess
+
+
+def _compute_coverage(passed: int, total: int, cannot_assess: int) -> tuple[int, int]:
+    """Compute coverage-adjusted score and coverage percentages.
+
+    score_pct = passed / (total - cannot_assess) * 100  (coverage-adjusted accuracy)
+    coverage_pct = (total - cannot_assess) / total * 100  (fraction testable)
+
+    Returns (score_pct, coverage_pct). Returns (0, 0) if total is 0.
+    """
+    if total <= 0:
+        return 0, 0
+    testable = total - cannot_assess
+    if testable <= 0:
+        return 0, 0
+    score_pct = int(passed / testable * 100)
+    coverage_pct = int(testable / total * 100)
+    return score_pct, coverage_pct
 
 
 @dataclass
@@ -1289,7 +1314,7 @@ class Orchestrator:
             # Detect leniency disparity between evaluators
             per_eval_rates = []
             for i, text in enumerate(eval_texts):
-                p, t = _parse_eval_score(text)
+                p, t, _ca = _parse_eval_score(text)
                 if t > 0:
                     per_eval_rates.append((i, int(p / t * 100)))
             if len(per_eval_rates) > 1:
@@ -1303,7 +1328,7 @@ class Orchestrator:
 
             # Validate: did we lose criteria during merge?
             input_criteria = sum(s.criteria_count for b in buckets for s in b)
-            _, output_criteria = _parse_eval_score(best_eval)
+            _, output_criteria, _ = _parse_eval_score(best_eval)
             if output_criteria < input_criteria:
                 lost = input_criteria - output_criteria
                 _log("Evaluator", f"{label} — ⚠ Merge lost {lost} criteria "
@@ -1322,16 +1347,30 @@ class Orchestrator:
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "eval", elapsed)
 
-        # PASS requires 100% criteria pass (same enforcement as _evaluate_single)
-        eval_passed, eval_total = _parse_eval_score(best_eval)
-        if eval_total > 0 and eval_passed < eval_total:
+        # PASS requires 100% of testable criteria + ≥85% coverage
+        # (CANNOT_ASSESS items are excluded from denominator — Autorubric SKIP strategy)
+        eval_passed, eval_total, cannot_assess = _parse_eval_score(best_eval)
+        score_pct, coverage_pct = _compute_coverage(eval_passed, eval_total, cannot_assess)
+        testable = eval_total - cannot_assess
+
+        if eval_total == 0:
+            passed = _check_verdict_pass(best_eval)
+        elif eval_passed < testable:
+            # Hard fail: any testable criterion failed
             passed = False
-            failed_count = eval_total - eval_passed
-            _log("Evaluator", f"{label} — {failed_count}/{eval_total} criteria failed. "
-                 f"PASS requires 100%.")
+            failed_count = testable - eval_passed
+            _log("Evaluator", f"{label} — {failed_count}/{testable} testable criteria failed. "
+                 f"PASS requires 100% of testable.")
+        elif coverage_pct < 85:
+            # Coverage too low: too many CANNOT_ASSESS suggests lazy evaluation
+            passed = False
+            _log("Evaluator", f"{label} — Coverage {coverage_pct}% below 85% threshold. "
+                 f"{cannot_assess}/{eval_total} marked CANNOT_ASSESS — may indicate "
+                 f"over-abstention. Overriding to FAIL.")
         else:
             passed = _check_verdict_pass(best_eval)
 
+        # Legacy automation-limited override (belt + suspenders)
         if passed:
             limited, total = _parse_automation_limited(best_eval)
             if total > 0 and limited / total > 0.10:
@@ -1350,11 +1389,11 @@ class Orchestrator:
         if not passed:
             _print_required_changes(best_eval)
 
-        eval_passed, eval_total = _parse_eval_score(best_eval)
         if eval_total > 0:
-            pct = int(eval_passed / eval_total * 100)
-            self.state.add_eval_score(sprint.number, attempt, eval_passed, eval_total)
-            _log("Evaluator", f"{label} — Score: {eval_passed}/{eval_total} ({pct}%)")
+            self.state.add_eval_score(sprint.number, attempt, eval_passed, eval_total,
+                                       cannot_assess=cannot_assess)
+            _log("Evaluator", f"{label} — Score: {eval_passed}/{testable} ({score_pct}%) "
+                 f"Coverage: {coverage_pct}% ({cannot_assess} CANNOT_ASSESS)")
 
         return passed
 
@@ -1521,18 +1560,28 @@ class Orchestrator:
         elapsed = int(time.time() - start)
         self.state.add_sprint_timing(sprint.number, "eval", elapsed)
 
-        # PASS requires 100% criteria pass. Evaluator's Verdict line is
-        # informational only — the orchestrator enforces the hard gate.
-        eval_passed, eval_total = _parse_eval_score(best_eval)
-        if eval_total > 0 and eval_passed < eval_total:
+        # PASS requires 100% of testable criteria + ≥85% coverage.
+        # CANNOT_ASSESS items are excluded from denominator (Autorubric SKIP).
+        eval_passed, eval_total, cannot_assess = _parse_eval_score(best_eval)
+        score_pct, coverage_pct = _compute_coverage(eval_passed, eval_total, cannot_assess)
+        testable = eval_total - cannot_assess
+
+        if eval_total == 0:
+            passed = _check_verdict_pass(best_eval)
+        elif eval_passed < testable:
             passed = False
-            failed_count = eval_total - eval_passed
-            _log("Evaluator", f"{label} — {failed_count}/{eval_total} criteria failed. "
-                 f"PASS requires 100%.")
+            failed_count = testable - eval_passed
+            _log("Evaluator", f"{label} — {failed_count}/{testable} testable criteria failed. "
+                 f"PASS requires 100% of testable.")
+        elif coverage_pct < 85:
+            passed = False
+            _log("Evaluator", f"{label} — Coverage {coverage_pct}% below 85% threshold. "
+                 f"{cannot_assess}/{eval_total} marked CANNOT_ASSESS — over-abstention suspected. "
+                 f"Overriding to FAIL.")
         else:
             passed = _check_verdict_pass(best_eval)
 
-        # Also reject if too many criteria were skipped as automation-limited
+        # Legacy automation-limited override (belt + suspenders for old-format criteria)
         if passed:
             limited, total = _parse_automation_limited(best_eval)
             if total > 0 and limited / total > 0.10:
@@ -1553,11 +1602,14 @@ class Orchestrator:
 
         # Track eval score for regression detection
         if eval_total > 0:
-            pct = int(eval_passed / eval_total * 100)
-            self.state.add_eval_score(sprint.number, attempt, eval_passed, eval_total)
-            _log("Evaluator", f"{label} — Score: {eval_passed}/{eval_total} ({pct}%)")
+            self.state.add_eval_score(sprint.number, attempt, eval_passed, eval_total,
+                                       cannot_assess=cannot_assess)
+            _log("Evaluator", f"{label} — Score: {eval_passed}/{testable} ({score_pct}%) "
+                 f"Coverage: {coverage_pct}% ({cannot_assess} CANNOT_ASSESS)")
             _log_event("eval_complete", sprint=sprint.number, attempt=attempt,
-                       passed=eval_passed, total=eval_total, pct=pct,
+                       passed=eval_passed, total=eval_total,
+                       cannot_assess=cannot_assess,
+                       score_pct=score_pct, coverage_pct=coverage_pct,
                        verdict="pass" if passed else "fail",
                        elapsed_s=elapsed,
                        cost_usd=getattr(final_result, "cost_usd", 0))
@@ -1993,17 +2045,25 @@ class Orchestrator:
             finally:
                 self.server.stop()
 
-            # PASS requires 100% criteria pass
-            eval_passed, eval_total = _parse_eval_score(best_eval)
-            if eval_total > 0 and eval_passed < eval_total:
+            # PASS requires 100% of testable criteria + ≥85% coverage
+            eval_passed, eval_total, cannot_assess = _parse_eval_score(best_eval)
+            score_pct, coverage_pct = _compute_coverage(eval_passed, eval_total, cannot_assess)
+            testable = eval_total - cannot_assess
+            if eval_total == 0:
+                passed = _check_verdict_pass(best_eval)
+            elif eval_passed < testable:
                 passed = False
-                failed_count = eval_total - eval_passed
-                _log("Evaluator", f"Integration — {failed_count}/{eval_total} criteria failed. "
-                     f"PASS requires 100%.")
+                failed_count = testable - eval_passed
+                _log("Evaluator", f"Integration — {failed_count}/{testable} testable criteria failed. "
+                     f"PASS requires 100% of testable.")
+            elif coverage_pct < 85:
+                passed = False
+                _log("Evaluator", f"Integration — Coverage {coverage_pct}% below 85% threshold. "
+                     f"Overriding to FAIL.")
             else:
                 passed = _check_verdict_pass(best_eval)
 
-            # Automation-limited override
+            # Legacy automation-limited override
             if passed:
                 limited, total = _parse_automation_limited(best_eval)
                 if total > 0 and limited / total > 0.10:
@@ -2015,9 +2075,10 @@ class Orchestrator:
 
             # Track integration eval score
             if eval_total > 0:
-                pct = int(eval_passed / eval_total * 100)
-                self.state.add_eval_score(0, attempt, eval_passed, eval_total)
-                _log("Evaluator", f"Integration — Score: {eval_passed}/{eval_total} ({pct}%)")
+                self.state.add_eval_score(0, attempt, eval_passed, eval_total,
+                                           cannot_assess=cannot_assess)
+                _log("Evaluator", f"Integration — Score: {eval_passed}/{testable} ({score_pct}%) "
+                     f"Coverage: {coverage_pct}%")
 
             if passed:
                 _log("Evaluator", f"Integration eval — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
@@ -2295,16 +2356,20 @@ class Orchestrator:
             finally:
                 self.server.stop()
 
-            # PASS requires 100% criteria pass
-            dr_passed, dr_total = _parse_eval_score(best_eval)
-            if dr_total > 0 and dr_passed < dr_total:
+            # PASS requires 100% of testable criteria
+            dr_passed, dr_total, dr_ca = _parse_eval_score(best_eval)
+            dr_testable = dr_total - dr_ca
+            if dr_total == 0:
+                passed = _check_verdict_pass(best_eval)
+            elif dr_passed < dr_testable:
                 passed = False
             else:
                 passed = _check_verdict_pass(best_eval)
 
             # Track design eval score
             if dr_total > 0:
-                self.state.add_eval_score(sprint.number, iteration, dr_passed, dr_total)
+                self.state.add_eval_score(sprint.number, iteration, dr_passed, dr_total,
+                                           cannot_assess=dr_ca)
             stats = _fmt_stats(eval_result, eval_start)
             if passed:
                 _log("Evaluator", f"Design eval {iteration} — {_C.GREEN}{_C.BOLD}PASS{_C.RESET} ({stats})")
